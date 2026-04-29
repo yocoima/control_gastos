@@ -28,7 +28,7 @@ const GEMINI_API_KEY = "AIzaSyDhfgfPbyK-Es1MSwlq7s35JtFq4110DAA"; // Tu clave de
 
 export default function App() {
   const [user, setUser] = useState(null);
-  const [currentDate, setCurrentDate] = useState(new Date(2026, 3, 1)); // Abril 2026
+  const [currentDate, setCurrentDate] = useState(new Date()); 
   const [movements, setMovements] = useState([]);
   const [balances, setBalances] = useState({ itau: 0, scotia: 0, edenred: 0, tc_deuda: 0 });
   const [loading, setLoading] = useState(true);
@@ -102,11 +102,16 @@ export default function App() {
 
   const saveToCloud = async (newMovs, newBals) => {
     if (!user) return;
-    await setDoc(doc(db, 'artifacts', APP_COLLECTION_ID, 'users', user.uid, 'monthly_records', monthKey), {
-      movements: newMovs,
-      balances: newBals,
-      updatedAt: new Date().toISOString()
-    });
+    try {
+      await setDoc(doc(db, 'artifacts', APP_COLLECTION_ID, 'users', user.uid, 'monthly_records', monthKey), {
+        movements: newMovs,
+        balances: newBals,
+        updatedAt: new Date().toISOString()
+      });
+    } catch (err) {
+      console.error("Error al guardar en Firebase:", err);
+      alert("Error al sincronizar con la base de datos: " + err.message);
+    }
   };
 
   // --- IA Y ACCIONES ---
@@ -262,7 +267,7 @@ export default function App() {
   const importCSV = (file) => {
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = (e) => {
+    reader.onload = async (e) => {
       try {
         const text = e.target.result;
         const rows = text.split('\n').slice(1);
@@ -281,7 +286,7 @@ export default function App() {
         });
         const updated = [...movements, ...newMovs];
         setMovements(updated);
-        saveToCloud(updated, balances);
+        await saveToCloud(updated, balances);
       } catch (error) {
         console.error("Error importando datos:", error);
       }
