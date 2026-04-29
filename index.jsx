@@ -138,7 +138,7 @@ export default function App() {
 
       const prompt = "Analiza esta boleta o factura. Extrae estrictamente un objeto JSON con este formato: {\"concept\": \"nombre del comercio o producto principal\", \"amount\": valor_total_numerico, \"category\": \"una de las categorías permitidas\"}. Categorías: Comida, Gastos fijos, Cuentas, Transporte, Diversión, Otros.";
       
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`, {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -153,7 +153,7 @@ export default function App() {
       }
 
       const result = await response.json();
-      if (!result.candidates || result.candidates.length === 0) {
+      if (!result.candidates || result.candidates.length === 0 || !result.candidates[0].content) {
         console.error("Respuesta completa de IA:", result);
         throw new Error("La IA no devolvió resultados. Puede que la imagen sea ilegible o haya sido bloqueada por filtros de seguridad.");
       }
@@ -288,14 +288,12 @@ export default function App() {
   };
 
   const handleUpdateBatch = (id, field, value) => {
-    const updated = tcBatches.map(batch => {
-      if (batch.id !== id) return batch;
-      return { ...batch, [field]: value };
-    });
-    setTcBatches(updated);
-    // Nota: El guardado real se dispara al presionar el botón "Save" en la UI
-    // para evitar saturar Firebase con cada pulsación de tecla.
-    return updated;
+    setTcBatches(prev => prev.map(batch => {
+      if (batch.id === id) {
+        return { ...batch, [field]: value };
+      }
+      return batch;
+    }));
   };
 
   const toggleTCItemExclusion = (batchId, itemId) => {
@@ -632,21 +630,24 @@ export default function App() {
                   <div key={batch.id} className="bg-white p-5 rounded-[2rem] border border-slate-200 shadow-sm">
                     <div className="flex justify-between items-start mb-3">
                       <div className="flex flex-col">
-                        {isEditing ? (
-                          <input 
-                            className="text-sm font-black text-slate-700 border-b-2 border-blue-400 outline-none w-full"
-                            value={batch.title || ""} 
-                            onChange={(e) => handleUpdateBatch(batch.id, 'title', e.target.value)}
-                            placeholder="Título..."
-                          />
-                        ) : (
-                          <span className="text-sm font-black text-slate-700 leading-tight">{batch.title || "Carga sin título"}</span>
-                        )}
+                        <div className="flex items-center gap-2">
+                          {isEditing ? (
+                            <input 
+                              className="text-sm font-black text-slate-700 border-b-2 border-blue-400 outline-none w-full"
+                              value={batch.title || ""} 
+                              onChange={(e) => handleUpdateBatch(batch.id, 'title', e.target.value)}
+                              placeholder="Título..."
+                              autoFocus
+                            />
+                          ) : (
+                            <span className="text-sm font-black text-slate-700 leading-tight">{batch.title || "Carga sin título"}</span>
+                          )}
+                        </div>
                         <span className="text-[9px] font-bold text-slate-400 uppercase tracking-tight">{batch.date}</span>
                       </div>
                       <div className="flex items-center gap-1">
                         {isEditing ? (
-                          <button onClick={() => { saveToCloud(movements, balances); setEditingBatchId(null); }} className="p-1.5 text-green-600 hover:bg-green-50 rounded-lg transition-all"><Save size={16}/></button>
+                          <button onClick={() => { saveToCloud(movements, balances, tcBatches); setEditingBatchId(null); }} className="p-1.5 text-green-600 hover:bg-green-50 rounded-lg transition-all shadow-sm"><Save size={16}/></button>
                         ) : (
                           <button onClick={() => setEditingBatchId(batch.id)} className="p-1.5 text-slate-400 hover:bg-slate-50 rounded-lg transition-all"><Edit2 size={16}/></button>
                         )}
@@ -663,7 +664,7 @@ export default function App() {
                       <>
                         {isEditing ? (
                           <textarea 
-                            className="text-[11px] text-slate-500 italic mb-4 bg-slate-50 p-2 rounded-xl border border-slate-100 w-full outline-none focus:border-blue-200"
+                            className="text-[11px] text-slate-500 italic mb-4 bg-slate-50 p-2 rounded-xl border border-slate-100 w-full outline-none focus:border-blue-200 min-h-[60px] resize-none"
                             value={batch.comment || ""}
                             onChange={(e) => handleUpdateBatch(batch.id, 'comment', e.target.value)}
                             placeholder="Comentario..."
