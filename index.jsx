@@ -498,7 +498,10 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-50">
-                    {movements.slice().reverse().map(m => (
+                    {[...movements].sort((a, b) => {
+                      if (a.isPaid !== b.isPaid) return a.isPaid ? 1 : -1;
+                      return b.id.localeCompare(a.id);
+                    }).map(m => (
                       <tr key={m.id} className={`group ${m.isPaid ? 'opacity-30' : 'hover:bg-slate-50'}`}>
                         <td className="px-6 py-4">
                           {editingId === m.id ? (
