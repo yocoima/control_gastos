@@ -548,8 +548,9 @@ export default function App() {
                   <CheckCircle2 size={20}/> REGISTRAR PAGO
                 </button>
               </div>
+             )}  
 
-              {/* Cargas TC Separadas */}
+            {/* Cargas TC Separadas */}
             <div className="space-y-4">
               <div className="flex justify-between items-center px-2">
                 <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Cargas de Tarjeta</h3>
