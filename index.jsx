@@ -195,12 +195,12 @@ export default function App() {
   };
 
   const copyDebtDetails = () => {
-    const pending = movements.filter(m => (m.type==='Compartido'||m.type==='Deuda'||m.type==='Préstamo') && !m.isPaid);
+    const pending = movements.filter(m => (m.type==='Compartido'||m.type==='Deuda'||m.type==='Préstamo'||m.type==='Yo debo') && !m.isPaid);
     const text = pending.map(m => {
-      const part = m.type === 'Compartido' ? m.amount / 2 : m.amount;
+      const part = m.type === 'Compartido' ? m.amount / 2 : (m.type === 'Yo debo' ? -m.amount : m.amount);
       return `• ${m.concept}: ${formatCLP(part)}`;
     }).join('\n');
-    const total = pending.reduce((acc, m) => acc + (m.type === 'Compartido' ? m.amount / 2 : m.amount), 0);
+    const total = pending.reduce((acc, m) => acc + (m.type === 'Compartido' ? m.amount / 2 : (m.type === 'Yo debo' ? -m.amount : m.amount)), 0);
     const finalMsg = `📝 *Detalle Deuda - ${currentDate.toLocaleString('es-CL', { month: 'long' })}*\n\n${text}\n\n*Total a pagar: ${formatCLP(total)}*`;
     
     navigator.clipboard.writeText(finalMsg);
@@ -302,6 +302,10 @@ export default function App() {
     else if (m.type === 'Compartido' || m.type === 'Deuda' || m.type === 'Préstamo') {
       acc.shared += m.amount;
       acc.debt += (m.type === 'Compartido' ? m.amount / 2 : m.amount);
+    }
+    else if (m.type === 'Yo debo') {
+      acc.indiv += m.amount;
+      acc.debt -= m.amount;
     }
     return acc;
   }, { income: 0, indiv: 0, shared: 0, debt: 0 });
@@ -438,6 +442,7 @@ export default function App() {
                   <select name="type" className="w-full bg-slate-50 border-2 border-transparent rounded-2xl px-3 py-4 text-sm font-bold outline-none">
                     <option value="Compartido">Compartido</option>
                     <option value="Individual">Personal</option>
+                    <option value="Yo debo">Yo debo (a Karla)</option>
                     <option value="Préstamo">Préstamo</option>
                     <option value="Ingreso">Ingreso</option>
                   </select>
@@ -450,10 +455,10 @@ export default function App() {
             </div>
 
             {/* Cobros Pendientes Karla */}
-            {totals.debt > 0 && (
-              <div className="bg-white p-6 rounded-[2.5rem] border border-slate-200 shadow-sm ring-4 ring-slate-50">
+            {(totals.debt !== 0) && (
+              <div className={`bg-white p-6 rounded-[2.5rem] border border-slate-200 shadow-sm ring-4 ring-slate-50 ${totals.debt < 0 ? 'border-amber-200' : ''}`}>
                 <div className="flex justify-between items-center mb-4">
-                  <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Deuda de Karla</h3>
+                  <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{totals.debt < 0 ? 'Mi deuda con Karla' : 'Deuda de Karla'}</h3>
                   <button 
                     onClick={copyDebtDetails} 
                     className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[10px] font-black transition-all ${copied ? 'bg-green-100 text-green-600' : 'bg-slate-100 text-slate-500 hover:bg-blue-50 hover:text-blue-600'}`}
@@ -463,10 +468,10 @@ export default function App() {
                   </button>
                 </div>
                 <div className="space-y-3 mb-6 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
-                  {movements.filter(m => (m.type==='Compartido'||m.type==='Deuda'||m.type==='Préstamo') && !m.isPaid).map(m => (
+                  {movements.filter(m => (m.type==='Compartido'||m.type==='Deuda'||m.type==='Préstamo'||m.type==='Yo debo') && !m.isPaid).map(m => (
                     <div key={m.id} className="flex justify-between items-center text-sm">
-                      <span className="text-slate-500 font-medium truncate pr-4">{m.concept} {m.type === 'Préstamo' && <span className="text-[8px] bg-amber-100 text-amber-700 px-1 rounded">100%</span>}</span>
-                      <span className="font-bold whitespace-nowrap">{formatCLP(m.type==='Compartido' ? m.amount/2 : m.amount)}</span>
+                      <span className="text-slate-500 font-medium truncate pr-4">{m.concept} {m.type === 'Préstamo' && <span className="text-[8px] bg-amber-100 text-amber-700 px-1 rounded">100%</span>} {m.type === 'Yo debo' && <span className="text-[8px] bg-red-100 text-red-700 px-1 rounded">Mía</span>}</span>
+                      <span className={`font-bold whitespace-nowrap ${m.type === 'Yo debo' ? 'text-red-600' : ''}`}>{formatCLP(m.type==='Compartido' ? m.amount/2 : (m.type === 'Yo debo' ? -m.amount : m.amount))}</span>
                     </div>
                   ))}
                 </div>
@@ -510,11 +515,12 @@ export default function App() {
                             <select className="border-2 border-blue-200 rounded-xl px-1 py-1 font-bold text-xs" value={m.type} onChange={e => handleUpdate(m.id, 'type', e.target.value)}>
                               <option value="Compartido">Compartido</option>
                               <option value="Individual">Personal</option>
+                              <option value="Yo debo">Yo debo</option>
                               <option value="Préstamo">Préstamo</option>
                               <option value="Ingreso">Ingreso</option>
                             </select>
                           ) : (
-                            <span className={`text-[9px] font-black px-2 py-1 rounded-lg uppercase ${m.type === 'Ingreso' ? 'bg-green-100 text-green-700' : m.type === 'Préstamo' ? 'bg-amber-100 text-amber-700' : m.type === 'Individual' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'}`}>{m.type}</span>
+                            <span className={`text-[9px] font-black px-2 py-1 rounded-lg uppercase ${m.type === 'Ingreso' ? 'bg-green-100 text-green-700' : m.type === 'Préstamo' ? 'bg-amber-100 text-amber-700' : m.type === 'Yo debo' ? 'bg-red-100 text-red-700' : m.type === 'Individual' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'}`}>{m.type}</span>
                           )}
                         </td>
                         <td className="px-6 py-4 text-right font-medium">{editingId === m.id ? <input className="w-20 text-right border-2 border-blue-200 rounded-xl" value={formatInputNumber(m.amount)} onChange={e => handleUpdate(m.id, 'amount', e.target.value)}/> : formatCLP(m.amount)}</td>
