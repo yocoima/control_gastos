@@ -143,7 +143,7 @@ export default function App() {
         body: JSON.stringify({
           contents: [{ parts: [{ text: prompt }, { inlineData: { mimeType: file.type, data: base64Data } }] }],
           generationConfig: { responseMimeType: "application/json" }
-        });
+        })
       });
 
       const result = await response.json();
