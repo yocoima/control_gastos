@@ -548,8 +548,34 @@ export default function App() {
                   <CheckCircle2 size={20}/> REGISTRAR PAGO
                 </button>
               </div>
-            )}
-          </div>
+
+              {/* Cargas TC Separadas */}
+            <div className="space-y-4">
+              <div className="flex justify-between items-center px-2">
+                <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Cargas de Tarjeta</h3>
+                <button onClick={() => setShowTCImportModal(true)} className="p-1.5 bg-blue-600 text-white rounded-lg shadow-sm hover:bg-blue-700 transition-all"><Plus size={16}/></button>
+              </div>
+              {tcBatches.slice().reverse().map(batch => (
+                <div key={batch.id} className="bg-white p-5 rounded-[2rem] border border-slate-200 shadow-sm">
+                  <div className="flex justify-between items-center mb-3">
+                    <span className="text-[10px] font-black text-slate-400">{batch.date}</span>
+                    <button onClick={() => {
+                      const updated = tcBatches.filter(b => b.id !== batch.id);
+                      setTcBatches(updated); saveToCloud(movements, balances, updated);
+                    }} className="text-slate-300 hover:text-red-500"><Trash2 size={14}/></button>
+                  </div>
+                  <div className="space-y-2">
+                    {batch.items.map(item => (
+                      <div key={item.id} className="flex justify-between items-center text-[11px]">
+                        <span className="text-slate-600 font-medium truncate pr-2">{item.concept}</span>
+                        <span className="font-bold text-slate-900">{formatCLP(item.amount)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>          
 
           {/* Historial */}
           <div className="lg:col-span-2">
@@ -558,19 +584,16 @@ export default function App() {
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead className="bg-white text-[10px] font-black text-slate-400 uppercase tracking-widest border-b">
-                    <tr>
-                      <th className="px-6 py-4 text-left">Detalle</th>
-                      <th className="px-6 py-4 text-left">Tipo</th>
-                      <th className="px-6 py-4 text-right">Total</th>
-                      <th className="px-6 py-4 text-right">Mi Parte</th>
+                    <tr>                      
+                      <th className="px-6 py-4 text-left cursor-pointer hover:text-blue-600 transition-colors" onClick={() => requestSort('Detalle')}>Detalle {getSortIcon('Detalle')}</th>
+                      <th className="px-6 py-4 text-left cursor-pointer hover:text-blue-600 transition-colors" onClick={() => requestSort('Tipo')}>Tipo {getSortIcon('Tipo')}</th>
+                      <th className="px-6 py-4 text-right cursor-pointer hover:text-blue-600 transition-colors" onClick={() => requestSort('Total')}>Total {getSortIcon('Total')}</th>
+                      <th className="px-6 py-4 text-right cursor-pointer hover:text-blue-600 transition-colors" onClick={() => requestSort('Mi Parte')}>Mi Parte {getSortIcon('Mi Parte')}</th>
                       <th className="px-6 py-4"></th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-50">
-                    {[...movements].sort((a, b) => {
-                      if (a.isPaid !== b.isPaid) return a.isPaid ? 1 : -1;
-                      return b.id.localeCompare(a.id);
-                    }).map(m => (
+                    {sortedMovements.map(m => (
                       <tr key={m.id} className={`group ${m.isPaid ? 'opacity-30' : 'hover:bg-slate-50'}`}>
                         <td className="px-6 py-4">
                           {editingId === m.id ? (
@@ -637,6 +660,22 @@ export default function App() {
               }} className="p-6 bg-slate-50 border-2 rounded-3xl font-black text-lg hover:border-red-500 transition-all text-center">Scotiabank</button>
               <button onClick={() => setShowPaymentModal(false)} className="py-4 text-slate-400 font-black uppercase text-xs text-center mt-2">Cerrar</button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {showTCImportModal && (
+        <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-md z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-[3rem] p-8 w-full max-w-2xl">
+            <h3 className="font-black text-2xl mb-2">Importar desde Banco</h3>
+            <p className="text-slate-500 text-sm mb-6">Pega aquí el detalle copiado de tu tarjeta de crédito.</p>
+            <form onSubmit={handleTCImport}>
+              <textarea name="tcData" className="w-full h-64 bg-slate-50 border-2 border-slate-100 rounded-3xl p-4 text-xs font-mono outline-none focus:border-blue-500 focus:bg-white transition-all mb-4" placeholder="FECHA	DESCRIPCIÓN	CIUDAD	MONTO..."></textarea>
+              <div className="flex gap-3">
+                <button type="button" onClick={() => setShowTCImportModal(false)} className="flex-1 py-4 bg-slate-100 text-slate-500 font-black rounded-2xl">CANCELAR</button>
+                <button type="submit" className="flex-1 py-4 bg-blue-600 text-white font-black rounded-2xl shadow-xl shadow-blue-100">PROCESAR CARGA</button>
+              </div>
+            </form>
           </div>
         </div>
       )}
