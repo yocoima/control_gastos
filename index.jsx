@@ -3,8 +3,8 @@ import { initializeApp } from 'firebase/app';
 import { getFirestore, doc, setDoc, onSnapshot } from 'firebase/firestore';
 import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signOut } from 'firebase/auth';
 import { 
-  ChevronLeft, ChevronRight, Trash2, ReceiptText, ChevronUp, ChevronDown,
-  CheckCircle2, Camera, Loader2, Edit2, Save, Image as ImageIcon, LogOut, Plus,
+  ChevronLeft, ChevronRight, Trash2, ReceiptText, ChevronUp, ChevronDown, Eye, EyeOff,
+  CheckCircle2, Camera, Loader2, Edit2, Save, Image as ImageIcon, LogOut, Plus, 
   CreditCard, Wallet, ArrowRightLeft, Copy, Check, Download, Upload, ShieldCheck
 } from 'lucide-react';
 
@@ -255,6 +255,20 @@ export default function App() {
     saveToCloud(updated, balances);
   };
 
+  const toggleTCItemExclusion = (batchId, itemId) => {
+    const updated = tcBatches.map(batch => {
+      if (batch.id !== batchId) return batch;
+      return {
+        ...batch,
+        items: batch.items.map(item =>
+          item.id === itemId ? { ...item, isExcluded: !item.isExcluded } : item
+        )
+      };
+    });
+    setTcBatches(updated);
+    saveToCloud(movements, balances, updated);
+  };
+
   const handleTCImport = (e) => {
     e.preventDefault();
     const text = e.target.tcData.value;
@@ -277,7 +291,8 @@ export default function App() {
         type: rawAmount < 0 ? 'Ingreso' : 'Individual',
         category: 'Tarjeta Crédito',
         myPart: rawAmount < 0 ? 0 : amount,
-        isPaid: false
+        isPaid: false,
+        isExcluded: false
       });
     });
 
@@ -337,7 +352,7 @@ export default function App() {
     if(csvInputRef.current) csvInputRef.current.value = ''; // Resetear el input
   };
 
-  const allMovements = [...movements, ...tcBatches.flatMap(b => b.items)];
+  const allMovements = [...movements, ...tcBatches.flatMap(b => b.items.filter(i => !i.isExcluded))];
 
   const totals = allMovements.reduce((acc, m) => {
     if (m.isPaid) return acc;
@@ -566,12 +581,23 @@ export default function App() {
                     }} className="text-slate-300 hover:text-red-500"><Trash2 size={14}/></button>
                   </div>
                   <div className="space-y-2">
-                    {batch.items.map(item => (
-                      <div key={item.id} className="flex justify-between items-center text-[11px]">
-                        <span className="text-slate-600 font-medium truncate pr-2">{item.concept}</span>
-                        <span className="font-bold text-slate-900">{formatCLP(item.amount)}</span>
-                      </div>
-                    ))}
+                    {batch.items.map(item => {
+                      return (
+                        <div key={item.id} className={`flex justify-between items-center text-[11px] ${item.isExcluded ? 'opacity-30' : ''}`}>
+                          <span className={`text-slate-600 font-medium truncate pr-2 ${item.isExcluded ? 'line-through text-slate-400' : ''}`}>{item.concept}</span>
+                          <div className="flex items-center gap-2">
+                            <span className={`font-bold ${item.isExcluded ? 'text-slate-400 line-through' : 'text-slate-900'}`}>{formatCLP(item.amount)}</span>
+                            <button onClick={() => toggleTCItemExclusion(batch.id, item.id)} className="text-slate-300 hover:text-blue-500 transition-colors" title={item.isExcluded ? "Sumar al total" : "Excluir del total"}>
+                              {item.isExcluded ? <EyeOff size={13} /> : <Eye size={13} />}
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div className="pt-3 mt-3 border-t border-slate-100 flex justify-between items-center">
+                    <span className="text-[9px] font-black text-slate-400 uppercase">Subtotal Carga</span>
+                    <span className="text-sm font-black text-blue-600">{formatCLP(batch.items.reduce((sum, i) => i.isExcluded ? sum : sum + i.amount, 0))}</span>
                   </div>
                 </div>
               ))}
