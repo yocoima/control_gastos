@@ -39,6 +39,8 @@ export default function App() {
   const [showTCImportModal, setShowTCImportModal] = useState(false);
   const [showTCPaymentModal, setShowTCPaymentModal] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [collapsedBatches, setCollapsedBatches] = useState([]);
+  const [isDebtCollapsed, setIsDebtCollapsed] = useState(false);
   
   const camInputRef = useRef(null);
   const galleryInputRef = useRef(null);
@@ -126,39 +128,45 @@ export default function App() {
     if (!file) return;
     setIsScanning(true);
     try {
-      const reader = new FileReader();
-      reader.readAsDataURL(file);
-      reader.onload = async () => {
-        const base64Data = reader.result.split(',')[1];
-        const prompt = "Analiza esta boleta. Extrae JSON: {\"concept\": \"...\", \"amount\": 0, \"category\": \"...\"}. Categorías: Comida, Gastos fijos, Cuentas, Transporte, Diversión, Otros.";
-        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: prompt }, { inlineData: { mimeType: file.type, data: base64Data } }] }],
-            generationConfig: { responseMimeType: "application/json" }
-          })
+      const base64Data = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result.split(',')[1]);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+
+      const prompt = "Analiza esta boleta o factura. Extrae estrictamente un objeto JSON con este formato: {\"concept\": \"nombre del comercio o producto principal\", \"amount\": valor_total_numerico, \"category\": \"una de las categorías permitidas\"}. Categorías: Comida, Gastos fijos, Cuentas, Transporte, Diversión, Otros.";
+      
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }, { inlineData: { mimeType: file.type, data: base64Data } }] }],
+          generationConfig: { responseMimeType: "application/json" }
         });
-        const result = await response.json();
-        if (!result.candidates || !result.candidates[0]) throw new Error("La IA no pudo procesar la imagen.");
-        let cleanText = result.candidates[0].content.parts[0].text;
-        cleanText = cleanText.replace(/```json|```/g, "").trim();
-        const data = JSON.parse(cleanText);
-        
-        const newMov = {
-          id: Date.now().toString(),
-          concept: data.concept || "Escaneado",
-          amount: data.amount || 0,
-          type: 'Compartido',
-          category: data.category || "Otros",
-          myPart: (data.amount || 0) / 2,
-          date: new Date().toLocaleDateString('es-CL'),
-          isPaid: false
-        };
-        const updated = [...movements, newMov];
-        setMovements(updated);
-        saveToCloud(updated, balances);
+      });
+
+      const result = await response.json();
+      if (!result.candidates || !result.candidates[0]) throw new Error("La IA no devolvió resultados.");
+      
+      let cleanText = result.candidates[0].content.parts[0].text;
+      cleanText = cleanText.replace(/```json|```/g, "").trim();
+      const data = JSON.parse(cleanText);
+      
+      const newMov = {
+        id: Date.now().toString(),
+        concept: data.concept || "Escaneado",
+        amount: data.amount || 0,
+        type: 'Compartido',
+        category: data.category || "Otros",
+        myPart: (data.amount || 0) / 2,
+        date: new Date().toLocaleDateString('es-CL'),
+        isPaid: false
       };
+      const updated = [...movements, newMov];
+      setMovements(updated);
+      saveToCloud(updated, balances);
+
     } catch (err) { 
       console.error("Error procesando boleta:", err);
       alert("Error al procesar la boleta: " + err.message);
@@ -262,6 +270,14 @@ export default function App() {
     saveToCloud(updated, balances);
   };
 
+  const toggleBatchCollapse = (batchId) => {
+    setCollapsedBatches(prev => 
+      prev.includes(batchId) 
+        ? prev.filter(id => id !== batchId) 
+        : [...prev, batchId]
+    );
+  };
+
   const toggleTCItemExclusion = (batchId, itemId) => {
     const updated = tcBatches.map(batch => {
       if (batch.id !== batchId) return batch;
@@ -279,6 +295,8 @@ export default function App() {
   const handleTCImport = (e) => {
     e.preventDefault();
     const text = e.target.tcData.value;
+    const title = e.target.tcTitle.value;
+    const comment = e.target.tcComment.value;
     const lines = text.split('\n');
     const items = [];
     
@@ -304,7 +322,7 @@ export default function App() {
     });
 
     if (items.length > 0) {
-      const newBatch = { id: Date.now().toString(), date: new Date().toLocaleString(), items };
+      const newBatch = { id: Date.now().toString(), date: new Date().toLocaleString(), items, title, comment };
       const updatedBatches = [...tcBatches, newBatch];
       setTcBatches(updatedBatches);
       saveToCloud(movements, balances, updatedBatches);
@@ -550,25 +568,34 @@ export default function App() {
               <div className={`bg-white p-6 rounded-[2.5rem] border border-slate-200 shadow-sm ring-4 ring-slate-50 ${totals.debt < 0 ? 'border-amber-200' : ''}`}>
                 <div className="flex justify-between items-center mb-4">
                   <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{totals.debt < 0 ? 'Mi deuda con Karla' : 'Deuda de Karla'}</h3>
-                  <button 
-                    onClick={copyDebtDetails} 
-                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[10px] font-black transition-all ${copied ? 'bg-green-100 text-green-600' : 'bg-slate-100 text-slate-500 hover:bg-blue-50 hover:text-blue-600'}`}
-                  >
-                    {copied ? <Check size={12}/> : <Copy size={12}/>}
-                    {copied ? 'COPIADO' : 'COPIAR DETALLE'}
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button 
+                      onClick={copyDebtDetails} 
+                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[10px] font-black transition-all ${copied ? 'bg-green-100 text-green-600' : 'bg-slate-100 text-slate-500 hover:bg-blue-50 hover:text-blue-600'}`}
+                    >
+                      {copied ? <Check size={12}/> : <Copy size={12}/>}
+                      {copied ? 'COPIADO' : 'COPIAR'}
+                    </button>
+                    <button onClick={() => setIsDebtCollapsed(!isDebtCollapsed)} className="p-1.5 text-slate-400 hover:bg-slate-50 rounded-lg transition-all">
+                      {isDebtCollapsed ? <ChevronDown size={16}/> : <ChevronUp size={16}/>}
+                    </button>
+                  </div>
                 </div>
-                <div className="space-y-3 mb-6 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
-                  {movements.filter(m => (m.type==='Compartido'||m.type==='Deuda'||m.type==='Préstamo'||m.type==='Yo debo') && !m.isPaid).map(m => (
-                    <div key={m.id} className="flex justify-between items-center text-sm">
-                      <span className="text-slate-500 font-medium truncate pr-4">{m.concept} {m.type === 'Préstamo' && <span className="text-[8px] bg-amber-100 text-amber-700 px-1 rounded">100%</span>} {m.type === 'Yo debo' && <span className="text-[8px] bg-red-100 text-red-700 px-1 rounded">Mía</span>}</span>
-                      <span className={`font-bold whitespace-nowrap ${m.type === 'Yo debo' ? 'text-red-600' : ''}`}>{formatCLP(m.type==='Compartido' ? m.amount/2 : (m.type === 'Yo debo' ? -m.amount : m.amount))}</span>
+                {!isDebtCollapsed && (
+                  <>
+                    <div className="space-y-3 mb-6 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
+                      {movements.filter(m => (m.type==='Compartido'||m.type==='Deuda'||m.type==='Préstamo'||m.type==='Yo debo') && !m.isPaid).map(m => (
+                        <div key={m.id} className="flex justify-between items-center text-sm">
+                          <span className="text-slate-500 font-medium truncate pr-4">{m.concept} {m.type === 'Préstamo' && <span className="text-[8px] bg-amber-100 text-amber-700 px-1 rounded">100%</span>} {m.type === 'Yo debo' && <span className="text-[8px] bg-red-100 text-red-700 px-1 rounded">Mía</span>}</span>
+                          <span className={`font-bold whitespace-nowrap ${m.type === 'Yo debo' ? 'text-red-600' : ''}`}>{formatCLP(m.type==='Compartido' ? m.amount/2 : (m.type === 'Yo debo' ? -m.amount : m.amount))}</span>
+                        </div>
+                      ))}
                     </div>
-                  ))}
-                </div>
-                <button onClick={() => setShowPaymentModal(true)} className="w-full bg-green-500 text-white font-black py-4 rounded-2xl flex items-center justify-center gap-2 hover:bg-green-600 shadow-lg shadow-green-100 transition-all">
-                  <CheckCircle2 size={20}/> REGISTRAR PAGO
-                </button>
+                    <button onClick={() => setShowPaymentModal(true)} className="w-full bg-green-500 text-white font-black py-4 rounded-2xl flex items-center justify-center gap-2 hover:bg-green-600 shadow-lg shadow-green-100 transition-all">
+                      <CheckCircle2 size={20}/> REGISTRAR PAGO
+                    </button>
+                  </>
+                )}
               </div>
              )}  
 
@@ -578,36 +605,50 @@ export default function App() {
                 <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Cargas de Tarjeta</h3>
                 <button onClick={() => setShowTCImportModal(true)} className="p-1.5 bg-blue-600 text-white rounded-lg shadow-sm hover:bg-blue-700 transition-all"><Plus size={16}/></button>
               </div>
-              {tcBatches.slice().reverse().map(batch => (
-                <div key={batch.id} className="bg-white p-5 rounded-[2rem] border border-slate-200 shadow-sm">
-                  <div className="flex justify-between items-center mb-3">
-                    <span className="text-[10px] font-black text-slate-400">{batch.date}</span>
-                    <button onClick={() => {
-                      const updated = tcBatches.filter(b => b.id !== batch.id);
-                      setTcBatches(updated); saveToCloud(movements, balances, updated);
-                    }} className="text-slate-300 hover:text-red-500"><Trash2 size={14}/></button>
-                  </div>
-                  <div className="space-y-2">
-                    {batch.items.map(item => {
-                      return (
-                        <div key={item.id} className={`flex justify-between items-center text-[11px] ${item.isExcluded ? 'opacity-30' : ''}`}>
-                          <span className={`text-slate-600 font-medium truncate pr-2 ${item.isExcluded ? 'line-through text-slate-400' : ''}`}>{item.concept}</span>
-                          <div className="flex items-center gap-2">
-                            <span className={`font-bold ${item.isExcluded ? 'text-slate-400 line-through' : 'text-slate-900'}`}>{formatCLP(item.amount)}</span>
-                            <button onClick={() => toggleTCItemExclusion(batch.id, item.id)} className="text-slate-300 hover:text-blue-500 transition-colors" title={item.isExcluded ? "Sumar al total" : "Excluir del total"}>
-                              {item.isExcluded ? <EyeOff size={13} /> : <Eye size={13} />}
-                            </button>
-                          </div>
+              {tcBatches.slice().reverse().map(batch => {
+                const isCollapsed = collapsedBatches.includes(batch.id);
+                return (
+                  <div key={batch.id} className="bg-white p-5 rounded-[2rem] border border-slate-200 shadow-sm">
+                    <div className="flex justify-between items-start mb-3">
+                      <div className="flex flex-col">
+                        <span className="text-sm font-black text-slate-700 leading-tight">{batch.title || "Carga sin título"}</span>
+                        <span className="text-[9px] font-bold text-slate-400 uppercase tracking-tight">{batch.date}</span>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <button onClick={() => toggleBatchCollapse(batch.id)} className="p-1.5 text-slate-400 hover:bg-slate-50 rounded-lg transition-all">
+                          {isCollapsed ? <ChevronDown size={16}/> : <ChevronUp size={16}/>}
+                        </button>
+                        <button onClick={() => {
+                          const updated = tcBatches.filter(b => b.id !== batch.id);
+                          setTcBatches(updated); saveToCloud(movements, balances, updated);
+                        }} className="p-1.5 text-slate-300 hover:text-red-500 transition-all"><Trash2 size={16}/></button>
+                      </div>
+                    </div>
+                    {!isCollapsed && (
+                      <>
+                        {batch.comment && <p className="text-[11px] text-slate-500 italic mb-4 bg-slate-50 p-2 rounded-xl border border-slate-100">{batch.comment}</p>}
+                        <div className="space-y-2">
+                          {batch.items.map(item => (
+                            <div key={item.id} className={`flex justify-between items-center text-[11px] ${item.isExcluded ? 'opacity-30' : ''}`}>
+                              <span className={`text-slate-600 font-medium truncate pr-2 ${item.isExcluded ? 'line-through text-slate-400' : ''}`}>{item.concept}</span>
+                              <div className="flex items-center gap-2">
+                                <span className={`font-bold ${item.isExcluded ? 'text-slate-400 line-through' : 'text-slate-900'}`}>{formatCLP(item.amount)}</span>
+                                <button onClick={() => toggleTCItemExclusion(batch.id, item.id)} className="text-slate-300 hover:text-blue-500 transition-colors">
+                                  {item.isExcluded ? <EyeOff size={13} /> : <Eye size={13} />}
+                                </button>
+                              </div>
+                            </div>
+                          ))}
                         </div>
-                      );
-                    })}
+                        <div className="pt-3 mt-3 border-t border-slate-100 flex justify-between items-center">
+                          <span className="text-[9px] font-black text-slate-400 uppercase">Subtotal Carga</span>
+                          <span className="text-sm font-black text-blue-600">{formatCLP(batch.items.reduce((sum, i) => i.isExcluded ? sum : sum + i.amount, 0))}</span>
+                        </div>
+                      </>
+                    )}
                   </div>
-                  <div className="pt-3 mt-3 border-t border-slate-100 flex justify-between items-center">
-                    <span className="text-[9px] font-black text-slate-400 uppercase">Subtotal Carga</span>
-                    <span className="text-sm font-black text-blue-600">{formatCLP(batch.items.reduce((sum, i) => i.isExcluded ? sum : sum + i.amount, 0))}</span>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>          
 
@@ -704,7 +745,11 @@ export default function App() {
             <h3 className="font-black text-2xl mb-2">Importar desde Banco</h3>
             <p className="text-slate-500 text-sm mb-6">Pega aquí el detalle copiado de tu tarjeta de crédito.</p>
             <form onSubmit={handleTCImport}>
-              <textarea name="tcData" className="w-full h-64 bg-slate-50 border-2 border-slate-100 rounded-3xl p-4 text-xs font-mono outline-none focus:border-blue-500 focus:bg-white transition-all mb-4" placeholder="FECHA	DESCRIPCIÓN	CIUDAD	MONTO..."></textarea>
+              <div className="space-y-3 mb-4">
+                <input name="tcTitle" placeholder="Título de la carga (ej. Compras del mes)" className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl p-4 text-sm font-bold focus:border-blue-500 outline-none transition-all" />
+                <textarea name="tcComment" placeholder="Comentario adicional..." className="w-full h-20 bg-slate-50 border-2 border-slate-100 rounded-2xl p-4 text-sm font-medium focus:border-blue-500 outline-none transition-all resize-none"></textarea>
+                <textarea name="tcData" className="w-full h-48 bg-slate-50 border-2 border-slate-100 rounded-3xl p-4 text-xs font-mono outline-none focus:border-blue-500 focus:bg-white transition-all" placeholder="FECHA	DESCRIPCIÓN	CIUDAD	MONTO..."></textarea>
+              </div>
               <div className="flex gap-3">
                 <button type="button" onClick={() => setShowTCImportModal(false)} className="flex-1 py-4 bg-slate-100 text-slate-500 font-black rounded-2xl">CANCELAR</button>
                 <button type="submit" className="flex-1 py-4 bg-blue-600 text-white font-black rounded-2xl shadow-xl shadow-blue-100">PROCESAR CARGA</button>
