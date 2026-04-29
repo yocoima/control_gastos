@@ -140,7 +140,11 @@ export default function App() {
           })
         });
         const result = await response.json();
-        const data = JSON.parse(result.candidates[0].content.parts[0].text);
+        if (!result.candidates || !result.candidates[0]) throw new Error("La IA no pudo procesar la imagen.");
+        let cleanText = result.candidates[0].content.parts[0].text;
+        cleanText = cleanText.replace(/```json|```/g, "").trim();
+        const data = JSON.parse(cleanText);
+        
         const newMov = {
           id: Date.now().toString(),
           concept: data.concept || "Escaneado",
@@ -155,7 +159,10 @@ export default function App() {
         setMovements(updated);
         saveToCloud(updated, balances);
       };
-    } catch (err) { console.error(err); } finally { setIsScanning(false); }
+    } catch (err) { 
+      console.error("Error procesando boleta:", err);
+      alert("Error al procesar la boleta: " + err.message);
+    } finally { setIsScanning(false); }
   };
 
   const handleAdd = (e) => {
@@ -281,7 +288,7 @@ export default function App() {
       
       const amountStr = parts[3].replace(/[$.]/g, '').replace(',', '.');
       const rawAmount = parseInt(amountStr, 10) || 0;
-      const amount = Math.abs(rawAmount);
+      const amount = rawAmount;
       
       items.push({
         id: Date.now().toString() + Math.random(),
