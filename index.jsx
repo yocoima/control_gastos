@@ -39,8 +39,9 @@ export default function App() {
   const [showTCImportModal, setShowTCImportModal] = useState(false);
   const [showTCPaymentModal, setShowTCPaymentModal] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [collapsedBatches, setCollapsedBatches] = useState([]);
-  const [isDebtCollapsed, setIsDebtCollapsed] = useState(false);
+  const [expandedBatches, setExpandedBatches] = useState([]);
+  const [isDebtCollapsed, setIsDebtCollapsed] = useState(true);
+  const [editingBatchId, setEditingBatchId] = useState(null);
   
   const camInputRef = useRef(null);
   const galleryInputRef = useRef(null);
@@ -146,10 +147,18 @@ export default function App() {
         })
       });
 
+      if (!response.ok) {
+        const errData = await response.json();
+        throw new Error(errData.error?.message || "Error en la petición a la IA");
+      }
+
       const result = await response.json();
-      if (!result.candidates || !result.candidates[0]) throw new Error("La IA no devolvió resultados.");
+      if (!result.candidates || result.candidates.length === 0) {
+        console.error("Respuesta completa de IA:", result);
+        throw new Error("La IA no devolvió resultados. Puede que la imagen sea ilegible o haya sido bloqueada por filtros de seguridad.");
+      }
       
-      let cleanText = result.candidates[0].content.parts[0].text;
+      let cleanText = result.candidates[0].content?.parts?.[0]?.text || "";
       cleanText = cleanText.replace(/```json|```/g, "").trim();
       const data = JSON.parse(cleanText);
       
@@ -270,12 +279,23 @@ export default function App() {
     saveToCloud(updated, balances);
   };
 
-  const toggleBatchCollapse = (batchId) => {
-    setCollapsedBatches(prev => 
+  const toggleBatchExpand = (batchId) => {
+    setExpandedBatches(prev => 
       prev.includes(batchId) 
         ? prev.filter(id => id !== batchId) 
         : [...prev, batchId]
     );
+  };
+
+  const handleUpdateBatch = (id, field, value) => {
+    const updated = tcBatches.map(batch => {
+      if (batch.id !== id) return batch;
+      return { ...batch, [field]: value };
+    });
+    setTcBatches(updated);
+    // Nota: El guardado real se dispara al presionar el botón "Save" en la UI
+    // para evitar saturar Firebase con cada pulsación de tecla.
+    return updated;
   };
 
   const toggleTCItemExclusion = (batchId, itemId) => {
@@ -606,17 +626,32 @@ export default function App() {
                 <button onClick={() => setShowTCImportModal(true)} className="p-1.5 bg-blue-600 text-white rounded-lg shadow-sm hover:bg-blue-700 transition-all"><Plus size={16}/></button>
               </div>
               {tcBatches.slice().reverse().map(batch => {
-                const isCollapsed = collapsedBatches.includes(batch.id);
+                const isExpanded = expandedBatches.includes(batch.id);
+                const isEditing = editingBatchId === batch.id;
                 return (
                   <div key={batch.id} className="bg-white p-5 rounded-[2rem] border border-slate-200 shadow-sm">
                     <div className="flex justify-between items-start mb-3">
                       <div className="flex flex-col">
-                        <span className="text-sm font-black text-slate-700 leading-tight">{batch.title || "Carga sin título"}</span>
+                        {isEditing ? (
+                          <input 
+                            className="text-sm font-black text-slate-700 border-b-2 border-blue-400 outline-none w-full"
+                            value={batch.title || ""} 
+                            onChange={(e) => handleUpdateBatch(batch.id, 'title', e.target.value)}
+                            placeholder="Título..."
+                          />
+                        ) : (
+                          <span className="text-sm font-black text-slate-700 leading-tight">{batch.title || "Carga sin título"}</span>
+                        )}
                         <span className="text-[9px] font-bold text-slate-400 uppercase tracking-tight">{batch.date}</span>
                       </div>
                       <div className="flex items-center gap-1">
-                        <button onClick={() => toggleBatchCollapse(batch.id)} className="p-1.5 text-slate-400 hover:bg-slate-50 rounded-lg transition-all">
-                          {isCollapsed ? <ChevronDown size={16}/> : <ChevronUp size={16}/>}
+                        {isEditing ? (
+                          <button onClick={() => { saveToCloud(movements, balances); setEditingBatchId(null); }} className="p-1.5 text-green-600 hover:bg-green-50 rounded-lg transition-all"><Save size={16}/></button>
+                        ) : (
+                          <button onClick={() => setEditingBatchId(batch.id)} className="p-1.5 text-slate-400 hover:bg-slate-50 rounded-lg transition-all"><Edit2 size={16}/></button>
+                        )}
+                        <button onClick={() => toggleBatchExpand(batch.id)} className="p-1.5 text-slate-400 hover:bg-slate-50 rounded-lg transition-all">
+                          {isExpanded ? <ChevronUp size={16}/> : <ChevronDown size={16}/>}
                         </button>
                         <button onClick={() => {
                           const updated = tcBatches.filter(b => b.id !== batch.id);
@@ -624,9 +659,18 @@ export default function App() {
                         }} className="p-1.5 text-slate-300 hover:text-red-500 transition-all"><Trash2 size={16}/></button>
                       </div>
                     </div>
-                    {!isCollapsed && (
+                    {isExpanded && (
                       <>
-                        {batch.comment && <p className="text-[11px] text-slate-500 italic mb-4 bg-slate-50 p-2 rounded-xl border border-slate-100">{batch.comment}</p>}
+                        {isEditing ? (
+                          <textarea 
+                            className="text-[11px] text-slate-500 italic mb-4 bg-slate-50 p-2 rounded-xl border border-slate-100 w-full outline-none focus:border-blue-200"
+                            value={batch.comment || ""}
+                            onChange={(e) => handleUpdateBatch(batch.id, 'comment', e.target.value)}
+                            placeholder="Comentario..."
+                          />
+                        ) : (
+                          batch.comment && <p className="text-[11px] text-slate-500 italic mb-4 bg-slate-50 p-2 rounded-xl border border-slate-100">{batch.comment}</p>
+                        )}
                         <div className="space-y-2">
                           {batch.items.map(item => (
                             <div key={item.id} className={`flex justify-between items-center text-[11px] ${item.isExcluded ? 'opacity-30' : ''}`}>
