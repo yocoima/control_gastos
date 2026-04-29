@@ -76,7 +76,8 @@ export default function App() {
     try {
       await signInWithPopup(auth, provider);
     } catch (err) {
-      console.error("Error al iniciar sesión", err);
+      console.error("Error completo:", err);
+      alert("Error al iniciar sesión: " + err.message);
     }
   };
 
