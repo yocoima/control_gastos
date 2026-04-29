@@ -3,8 +3,8 @@ import { initializeApp } from 'firebase/app';
 import { getFirestore, doc, setDoc, onSnapshot } from 'firebase/firestore';
 import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signOut } from 'firebase/auth';
 import { 
-  ChevronLeft, ChevronRight, Trash2, ReceiptText, 
-  CheckCircle2, Camera, Loader2, Edit2, Save, Image as ImageIcon, LogOut,
+  ChevronLeft, ChevronRight, Trash2, ReceiptText, ChevronUp, ChevronDown,
+  CheckCircle2, Camera, Loader2, Edit2, Save, Image as ImageIcon, LogOut, Plus,
   CreditCard, Wallet, ArrowRightLeft, Copy, Check, Download, Upload, ShieldCheck
 } from 'lucide-react';
 
@@ -31,10 +31,12 @@ export default function App() {
   const [currentDate, setCurrentDate] = useState(new Date()); 
   const [movements, setMovements] = useState([]);
   const [balances, setBalances] = useState({ itau: 0, scotia: 0, edenred: 0, tc_deuda: 0 });
+  const [tcBatches, setTcBatches] = useState([]);
   const [loading, setLoading] = useState(true);
   const [isScanning, setIsScanning] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
+  const [showTCImportModal, setShowTCImportModal] = useState(false);
   const [showTCPaymentModal, setShowTCPaymentModal] = useState(false);
   const [copied, setCopied] = useState(false);
   
@@ -42,6 +44,8 @@ export default function App() {
   const galleryInputRef = useRef(null);
   const csvInputRef = useRef(null);
   const monthKey = `${currentDate.getFullYear()}-${(currentDate.getMonth() + 1).toString().padStart(2, '0')}`;
+
+  const [sortConfig, setSortConfig] = useState({ key: 'id', direction: 'desc' });
 
   // --- FORMATEO ---
   const formatCLP = (val) => new Intl.NumberFormat('es-CL', { style: 'currency', currency: 'CLP', minimumFractionDigits: 0 }).format(val || 0);
@@ -91,21 +95,24 @@ export default function App() {
         const data = snap.data();
         setMovements(data.movements || []);
         setBalances(data.balances || { itau: 0, scotia: 0, edenred: 0, tc_deuda: 0 });
+        setTcBatches(data.tcBatches || []);
       } else {
         setMovements([]);
         setBalances({ itau: 0, scotia: 0, edenred: 0, tc_deuda: 0 });
+        setTcBatches([]);
       }
       setLoading(false);
     }, (err) => setLoading(false));
     return () => unsubscribe();
   }, [user, monthKey]);
 
-  const saveToCloud = async (newMovs, newBals) => {
+  const saveToCloud = async (newMovs, newBals, newBatches = tcBatches) => {
     if (!user) return;
     try {
       await setDoc(doc(db, 'artifacts', APP_COLLECTION_ID, 'users', user.uid, 'monthly_records', monthKey), {
         movements: newMovs,
         balances: newBals,
+        tcBatches: newBatches,
         updatedAt: new Date().toISOString()
       });
     } catch (err) {
@@ -248,6 +255,41 @@ export default function App() {
     saveToCloud(updated, balances);
   };
 
+  const handleTCImport = (e) => {
+    e.preventDefault();
+    const text = e.target.tcData.value;
+    const lines = text.split('\n');
+    const items = [];
+    
+    lines.forEach(line => {
+      const parts = line.split('\t');
+      if (parts.length < 4 || parts[0].toLowerCase().includes('fecha')) return;
+      
+      const amountStr = parts[3].replace(/[$.]/g, '').replace(',', '.');
+      const rawAmount = parseInt(amountStr, 10) || 0;
+      const amount = Math.abs(rawAmount);
+      
+      items.push({
+        id: Date.now().toString() + Math.random(),
+        date: parts[0],
+        concept: parts[1],
+        amount: amount,
+        type: rawAmount < 0 ? 'Ingreso' : 'Individual',
+        category: 'Tarjeta Crédito',
+        myPart: rawAmount < 0 ? 0 : amount,
+        isPaid: false
+      });
+    });
+
+    if (items.length > 0) {
+      const newBatch = { id: Date.now().toString(), date: new Date().toLocaleString(), items };
+      const updatedBatches = [...tcBatches, newBatch];
+      setTcBatches(updatedBatches);
+      saveToCloud(movements, balances, updatedBatches);
+      setShowTCImportModal(false);
+    }
+  };
+
   const exportCSV = () => {
     const headers = ['ID', 'Concepto', 'Monto', 'Tipo', 'Categoria', 'Mi Parte', 'Fecha', 'Pagado'];
     const rows = movements.map(m => [
@@ -295,7 +337,9 @@ export default function App() {
     if(csvInputRef.current) csvInputRef.current.value = ''; // Resetear el input
   };
 
-  const totals = movements.reduce((acc, m) => {
+  const allMovements = [...movements, ...tcBatches.flatMap(b => b.items)];
+
+  const totals = allMovements.reduce((acc, m) => {
     if (m.isPaid) return acc;
     if (m.type === 'Ingreso') acc.income += m.amount;
     else if (m.type === 'Individual') acc.indiv += m.amount;
@@ -309,6 +353,31 @@ export default function App() {
     }
     return acc;
   }, { income: 0, indiv: 0, shared: 0, debt: 0 });
+
+  const requestSort = (key) => {
+    let direction = 'asc';
+    if (sortConfig.key === key && sortConfig.direction === 'asc') {
+      direction = 'desc';
+    }
+    setSortConfig({ key, direction });
+  };
+
+  const getSortIcon = (key) => {
+    if (sortConfig.key !== key) return <ArrowRightLeft size={10} className="inline ml-1 opacity-20 rotate-90" />;
+    return sortConfig.direction === 'asc' ? <ChevronUp size={10} className="inline ml-1 text-blue-600" /> : <ChevronDown size={10} className="inline ml-1 text-blue-600" />;
+  };
+
+  const sortedMovements = [...movements].sort((a, b) => {
+    if (a.isPaid !== b.isPaid) return a.isPaid ? 1 : -1;
+    if (!sortConfig.key) return b.id.localeCompare(a.id);
+    
+    let aVal = a[sortConfig.key === 'Total' ? 'amount' : sortConfig.key === 'Detalle' ? 'concept' : sortConfig.key === 'Tipo' ? 'type' : sortConfig.key === 'Mi Parte' ? 'myPart' : sortConfig.key];
+    let bVal = b[sortConfig.key === 'Total' ? 'amount' : sortConfig.key === 'Detalle' ? 'concept' : sortConfig.key === 'Tipo' ? 'type' : sortConfig.key === 'Mi Parte' ? 'myPart' : sortConfig.key];
+
+    if (aVal < bVal) return sortConfig.direction === 'asc' ? -1 : 1;
+    if (aVal > bVal) return sortConfig.direction === 'asc' ? 1 : -1;
+    return 0;
+  });
 
   const totalBancos = balances.itau + balances.scotia;
   const liquidezReal = totalBancos - balances.tc_deuda;
