@@ -138,7 +138,7 @@ export default function App() {
 
       const prompt = "Analiza esta boleta o factura. Extrae estrictamente un objeto JSON con este formato: {\"concept\": \"nombre del comercio o producto principal\", \"amount\": valor_total_numerico, \"category\": \"una de las categorías permitidas\"}. Categorías: Comida, Gastos fijos, Cuentas, Transporte, Diversión, Otros.";
       
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -647,7 +647,7 @@ export default function App() {
                       </div>
                       <div className="flex items-center gap-1">
                         {isEditing ? (
-                          <button onClick={() => { saveToCloud(movements, balances, tcBatches); setEditingBatchId(null); }} className="p-1.5 text-green-600 hover:bg-green-50 rounded-lg transition-all shadow-sm"><Save size={16}/></button>
+                          <button onClick={() => { saveToCloud(movements, balances, tcBatches); setEditingBatchId(null); }} className="p-1.5 bg-green-50 text-green-600 rounded-lg transition-all shadow-sm border border-green-100"><Save size={16}/></button>
                         ) : (
                           <button onClick={() => setEditingBatchId(batch.id)} className="p-1.5 text-slate-400 hover:bg-slate-50 rounded-lg transition-all"><Edit2 size={16}/></button>
                         )}
