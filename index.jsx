@@ -197,13 +197,8 @@ export default function App() {
     const total = pending.reduce((acc, m) => acc + (m.type === 'Compartido' ? m.amount / 2 : m.amount), 0);
     const finalMsg = `📝 *Detalle Deuda - ${currentDate.toLocaleString('es-CL', { month: 'long' })}*\n\n${text}\n\n*Total a pagar: ${formatCLP(total)}*`;
     
-    const textArea = document.createElement("textarea");
-    textArea.value = finalMsg;
-    document.body.appendChild(textArea);
-    textArea.select();
-    document.execCommand('copy');
-    document.body.removeChild(textArea);
-    
+    navigator.clipboard.writeText(finalMsg);
+
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
