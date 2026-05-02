@@ -24,8 +24,7 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 const APP_COLLECTION_ID = 'gastos-chile-v2'; // Este es el ID de la colección principal para tus datos
-const GEMINI_API_KEY = "AIzaSyBe1Jg05xR8c8u1IRXFBv2MldGRDY6v6yI"; // Tu clave de API de Gemini
-
+const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
 export default function App() {
   const [user, setUser] = useState(null);
   const [currentDate, setCurrentDate] = useState(new Date()); 
@@ -138,7 +137,7 @@ export default function App() {
 
       const prompt = "Analiza esta boleta o factura. Extrae estrictamente un objeto JSON con este formato: {\"concept\": \"nombre del comercio o producto principal\", \"amount\": valor_total_numerico, \"category\": \"una de las categorías permitidas\"}. Categorías: Comida, Gastos fijos, Cuentas, Transporte, Diversión, Otros.";
       
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`, {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
