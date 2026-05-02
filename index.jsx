@@ -24,7 +24,7 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 const APP_COLLECTION_ID = 'gastos-chile-v2'; // Este es el ID de la colección principal para tus datos
-const GEMINI_API_KEY = "AIzaSyDhfgfPbyK-Es1MSwlq7s35JtFq4110DAA"; // Tu clave de API de Gemini
+const GEMINI_API_KEY = "AIzaSyBe1Jg05xR8c8u1IRXFBv2MldGRDY6v6yI"; // Tu clave de API de Gemini
 
 export default function App() {
   const [user, setUser] = useState(null);
