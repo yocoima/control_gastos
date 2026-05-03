@@ -129,16 +129,34 @@ export default function App() {
     setIsScanning(true);
     try {
       const base64Data = await new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(reader.result.split(',')[1]);
-        reader.onerror = reject;
-        reader.readAsDataURL(file);
+        const img = new Image();
+        const url = URL.createObjectURL(file);
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          const maxSize = 1024;
+          let { width, height } = img;
+          if (width > maxSize || height > maxSize) {
+            if (width > height) { height = (height / width) * maxSize; width = maxSize; }
+            else { width = (width / height) * maxSize; height = maxSize; }
+          }
+          canvas.width = width;
+          canvas.height = height;
+          canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+          URL.revokeObjectURL(url);
+          resolve(canvas.toDataURL('image/jpeg', 0.8).split(',')[1]);
+        };
+        img.onerror = reject;
+        img.src = url;
       });
 
       const prompt = "Analiza esta boleta o factura. Extrae estrictamente un objeto JSON con este formato: {\"concept\": \"nombre del comercio o producto principal\", \"amount\": valor_total_numerico, \"category\": \"una de las categorías permitidas\"}. Categorías: Comida, Gastos fijos, Cuentas, Transporte, Diversión, Otros. Responde SOLO con el JSON, sin texto adicional.";
 
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000);
+
       const response = await fetch(`https://api.groq.com/openai/v1/chat/completions`, {
         method: 'POST',
+        signal: controller.signal,
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${GROQ_API_KEY}`
@@ -149,16 +167,17 @@ export default function App() {
             role: "user",
             content: [
               { type: "text", text: prompt },
-              { type: "image_url", image_url: { url: `data:${file.type};base64,${base64Data}` } }
+              { type: "image_url", image_url: { url: `data:image/jpeg;base64,${base64Data}` } }
             ]
           }],
           response_format: { type: "json_object" }
         })
       });
+      clearTimeout(timeoutId);
 
       if (!response.ok) {
         const errData = await response.json();
-        throw new Error(errData.error?.message || "Error en la petición a la IA");
+        throw new Error(errData.error?.message || `Error ${response.status} en la petición a la IA`);
       }
 
       const result = await response.json();
