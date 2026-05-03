@@ -409,11 +409,19 @@ export default function App() {
 
   const copyDebtDetails = () => {
     const pending = movements.filter(m => (m.type==='Compartido'||m.type==='Deuda'||m.type==='Préstamo'||m.type==='Yo debo') && !m.isPaid);
-    const text = pending.map(m => {
+    const pendingInst = activeInstallments.filter(inst => (inst.type==='Compartido'||inst.type==='Préstamo'||inst.type==='Yo debo') && !inst.isPaid);
+    const movText = pending.map(m => {
       const part = m.type === 'Compartido' ? m.amount / 2 : (m.type === 'Yo debo' ? -m.amount : m.amount);
       return `• ${m.concept}: ${formatCLP(part)}`;
-    }).join('\n');
-    const total = pending.reduce((acc, m) => acc + (m.type === 'Compartido' ? m.amount / 2 : (m.type === 'Yo debo' ? -m.amount : m.amount)), 0);
+    });
+    const instText = pendingInst.map(inst => {
+      const part = inst.type === 'Compartido' ? inst.monthlyAmount / 2 : (inst.type === 'Yo debo' ? -inst.monthlyAmount : inst.monthlyAmount);
+      return `• ${inst.concept} (cuota ${inst.installmentNumber}/${inst.installments}): ${formatCLP(part)}`;
+    });
+    const text = [...movText, ...instText].join('\n');
+    const movTotal = pending.reduce((acc, m) => acc + (m.type === 'Compartido' ? m.amount / 2 : (m.type === 'Yo debo' ? -m.amount : m.amount)), 0);
+    const instTotal2 = pendingInst.reduce((acc, inst) => acc + (inst.type === 'Compartido' ? inst.monthlyAmount / 2 : (inst.type === 'Yo debo' ? -inst.monthlyAmount : inst.monthlyAmount)), 0);
+    const total = movTotal + instTotal2;
     const finalMsg = `📝 *Detalle Deuda - ${currentDate.toLocaleString('es-CL', { month: 'long' })}*\n\n${text}\n\n*Total a pagar: ${formatCLP(total)}*`;
     
     navigator.clipboard.writeText(finalMsg);
@@ -829,6 +837,18 @@ export default function App() {
                           <span className={`font-bold whitespace-nowrap ${m.type === 'Yo debo' ? 'text-red-600' : ''}`}>{formatCLP(m.type==='Compartido' ? m.amount/2 : (m.type === 'Yo debo' ? -m.amount : m.amount))}</span>
                         </div>
                       ))}
+                      {activeInstallments.filter(inst => (inst.type==='Compartido'||inst.type==='Préstamo'||inst.type==='Yo debo') && !inst.isPaid).map(inst => (
+                        <div key={'inst_debt_' + inst.id} className="flex justify-between items-center text-sm">
+                          <span className="text-slate-500 font-medium truncate pr-4">
+                            {inst.concept}
+                            <span className="text-[8px] bg-blue-100 text-blue-700 px-1 rounded ml-1">{inst.installmentNumber}/{inst.installments}</span>
+                            {inst.type === 'Yo debo' && <span className="text-[8px] bg-red-100 text-red-700 px-1 rounded ml-1">Mía</span>}
+                          </span>
+                          <span className={`font-bold whitespace-nowrap ${inst.type === 'Yo debo' ? 'text-red-600' : ''}`}>
+                            {formatCLP(inst.type==='Compartido' ? inst.monthlyAmount/2 : (inst.type==='Yo debo' ? -inst.monthlyAmount : inst.monthlyAmount))}
+                          </span>
+                        </div>
+                      ))}
                     </div>
                     <button onClick={() => setShowPaymentModal(true)} className="w-full bg-green-500 text-white font-black py-4 rounded-2xl flex items-center justify-center gap-2 hover:bg-green-600 shadow-lg shadow-green-100 transition-all">
                       <CheckCircle2 size={20}/> REGISTRAR PAGO
@@ -949,7 +969,7 @@ export default function App() {
                               <p className="font-bold text-slate-800">{inst.concept}</p>
                               <span className="text-[8px] font-black bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded-md whitespace-nowrap">{inst.installmentNumber}/{inst.installments}</span>
                             </div>
-                            <p className="text-[10px] text-slate-400 uppercase font-bold">{inst.category}</p>
+                            <p className="text-[10px] text-slate-400 uppercase font-bold">{inst.category} · Total {formatCLP(inst.totalAmount)}</p>
                           </div>
                         </td>
                         <td className="px-6 py-4">
