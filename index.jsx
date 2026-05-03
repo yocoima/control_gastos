@@ -42,9 +42,13 @@ export default function App() {
   const [isDebtCollapsed, setIsDebtCollapsed] = useState(true);
   const [editingBatchId, setEditingBatchId] = useState(null);
   const DEFAULT_TYPES = ['Compartido', 'Individual', 'Yo debo', 'Préstamo', 'Ingreso'];
+  const DEFAULT_CATEGORIES = ['Comida', 'Gastos fijos', 'Cuentas', 'Transporte', 'Diversión', 'Sueldo', 'Otros'];
   const [movTypes, setMovTypes] = useState(DEFAULT_TYPES);
+  const [movCategories, setMovCategories] = useState(DEFAULT_CATEGORIES);
   const [showTypesModal, setShowTypesModal] = useState(false);
+  const [modalTab, setModalTab] = useState('categorias');
   const [newTypeName, setNewTypeName] = useState('');
+  const [newCategoryName, setNewCategoryName] = useState('');
   
   const camInputRef = useRef(null);
   const galleryInputRef = useRef(null);
@@ -120,6 +124,36 @@ export default function App() {
     const updated = movTypes.filter(t => t !== name);
     setMovTypes(updated);
     saveTypes(updated);
+  };
+
+  useEffect(() => {
+    if (!user) return;
+    const configRef = doc(db, 'artifacts', APP_COLLECTION_ID, 'users', user.uid, 'config', 'categories');
+    const unsub = onSnapshot(configRef, (snap) => {
+      if (snap.exists() && snap.data().list?.length > 0) setMovCategories(snap.data().list);
+    });
+    return () => unsub();
+  }, [user]);
+
+  const saveCategories = async (newCats) => {
+    if (!user) return;
+    await setDoc(doc(db, 'artifacts', APP_COLLECTION_ID, 'users', user.uid, 'config', 'categories'), { list: newCats });
+  };
+
+  const addCategory = () => {
+    const name = newCategoryName.trim();
+    if (!name || movCategories.includes(name)) return;
+    const updated = [...movCategories, name];
+    setMovCategories(updated);
+    saveCategories(updated);
+    setNewCategoryName('');
+  };
+
+  const deleteCategory = (name) => {
+    if (DEFAULT_CATEGORIES.includes(name)) return;
+    const updated = movCategories.filter(c => c !== name);
+    setMovCategories(updated);
+    saveCategories(updated);
   };
 
   // --- CARGA DE DATOS ---
@@ -638,7 +672,7 @@ export default function App() {
                   </select>
                 </div>
                 <select name="category" className="w-full bg-slate-50 border-2 border-transparent rounded-2xl px-4 py-4 text-sm font-medium outline-none">
-                  {["Comida", "Gastos fijos", "Cuentas", "Transporte", "Diversión", "Sueldo", "Otros"].map(c => <option key={c}>{c}</option>)}
+                  {movCategories.map(c => <option key={c}>{c}</option>)}
                 </select>
                 <button className="w-full bg-blue-600 text-white font-black py-4 rounded-2xl shadow-xl hover:bg-blue-700 transition-all">GUARDAR</button>
               </form>
@@ -780,7 +814,12 @@ export default function App() {
                       <tr key={m.id} className={`group ${m.isPaid ? 'opacity-30' : 'hover:bg-slate-50'}`}>
                         <td className="px-6 py-4">
                           {editingId === m.id ? (
-                            <input className="w-full border-2 border-blue-200 rounded-xl px-2 py-1 font-bold" value={m.concept} onChange={e => handleUpdate(m.id, 'concept', e.target.value)} autoFocus />
+                            <div className="flex flex-col gap-1">
+                              <input className="w-full border-2 border-blue-200 rounded-xl px-2 py-1 font-bold text-sm" value={m.concept} onChange={e => handleUpdate(m.id, 'concept', e.target.value)} autoFocus />
+                              <select className="w-full border-2 border-blue-200 rounded-xl px-2 py-1 font-bold text-xs" value={m.category} onChange={e => handleUpdate(m.id, 'category', e.target.value)}>
+                                {movCategories.map(c => <option key={c} value={c}>{c}</option>)}
+                              </select>
+                            </div>
                           ) : (
                             <div>
                               <p className="font-bold text-slate-800">{m.concept}</p>
@@ -880,31 +919,55 @@ export default function App() {
         <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-md z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-[3rem] p-8 w-full max-w-md">
             <div className="flex justify-between items-center mb-6">
-              <h3 className="font-black text-2xl">Tipos de Gasto</h3>
+              <h3 className="font-black text-2xl">Gestionar</h3>
               <button onClick={() => setShowTypesModal(false)} className="p-2 text-slate-400 hover:bg-slate-100 rounded-xl"><X size={20}/></button>
             </div>
-            <div className="space-y-2 mb-6 max-h-64 overflow-y-auto">
-              {movTypes.map(t => (
-                <div key={t} className="flex items-center justify-between bg-slate-50 px-4 py-3 rounded-2xl">
-                  <span className="font-bold text-sm">{t}</span>
-                  {DEFAULT_TYPES.includes(t) ? (
-                    <span className="text-[9px] font-black text-slate-400 uppercase px-2 py-1 bg-slate-200 rounded-lg">Base</span>
-                  ) : (
-                    <button onClick={() => deleteType(t)} className="p-1.5 text-slate-400 hover:text-red-500 transition-colors"><Trash2 size={15}/></button>
-                  )}
+            <div className="flex gap-2 mb-6 bg-slate-100 p-1 rounded-2xl">
+              <button onClick={() => setModalTab('categorias')} className={`flex-1 py-2 rounded-xl text-xs font-black uppercase transition-all ${modalTab === 'categorias' ? 'bg-white shadow text-slate-800' : 'text-slate-400'}`}>Categorías</button>
+              <button onClick={() => setModalTab('tipos')} className={`flex-1 py-2 rounded-xl text-xs font-black uppercase transition-all ${modalTab === 'tipos' ? 'bg-white shadow text-slate-800' : 'text-slate-400'}`}>Tipos</button>
+            </div>
+
+            {modalTab === 'categorias' && (
+              <>
+                <div className="space-y-2 mb-6 max-h-64 overflow-y-auto">
+                  {movCategories.map(c => (
+                    <div key={c} className="flex items-center justify-between bg-slate-50 px-4 py-3 rounded-2xl">
+                      <span className="font-bold text-sm">{c}</span>
+                      {DEFAULT_CATEGORIES.includes(c) ? (
+                        <span className="text-[9px] font-black text-slate-400 uppercase px-2 py-1 bg-slate-200 rounded-lg">Base</span>
+                      ) : (
+                        <button onClick={() => deleteCategory(c)} className="p-1.5 text-slate-400 hover:text-red-500 transition-colors"><Trash2 size={15}/></button>
+                      )}
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
-            <div className="flex gap-2">
-              <input
-                value={newTypeName}
-                onChange={e => setNewTypeName(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && addType()}
-                placeholder="Nuevo tipo..."
-                className="flex-1 bg-slate-50 border-2 border-transparent rounded-2xl px-4 py-3 text-sm font-medium focus:bg-white focus:border-blue-500 outline-none"
-              />
-              <button onClick={addType} className="p-3 bg-blue-600 text-white rounded-2xl hover:bg-blue-700 transition-all"><Plus size={20}/></button>
-            </div>
+                <div className="flex gap-2">
+                  <input value={newCategoryName} onChange={e => setNewCategoryName(e.target.value)} onKeyDown={e => e.key === 'Enter' && addCategory()} placeholder="Nueva categoría..." className="flex-1 bg-slate-50 border-2 border-transparent rounded-2xl px-4 py-3 text-sm font-medium focus:bg-white focus:border-blue-500 outline-none" />
+                  <button onClick={addCategory} className="p-3 bg-blue-600 text-white rounded-2xl hover:bg-blue-700 transition-all"><Plus size={20}/></button>
+                </div>
+              </>
+            )}
+
+            {modalTab === 'tipos' && (
+              <>
+                <div className="space-y-2 mb-6 max-h-64 overflow-y-auto">
+                  {movTypes.map(t => (
+                    <div key={t} className="flex items-center justify-between bg-slate-50 px-4 py-3 rounded-2xl">
+                      <span className="font-bold text-sm">{t}</span>
+                      {DEFAULT_TYPES.includes(t) ? (
+                        <span className="text-[9px] font-black text-slate-400 uppercase px-2 py-1 bg-slate-200 rounded-lg">Base</span>
+                      ) : (
+                        <button onClick={() => deleteType(t)} className="p-1.5 text-slate-400 hover:text-red-500 transition-colors"><Trash2 size={15}/></button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                <div className="flex gap-2">
+                  <input value={newTypeName} onChange={e => setNewTypeName(e.target.value)} onKeyDown={e => e.key === 'Enter' && addType()} placeholder="Nuevo tipo..." className="flex-1 bg-slate-50 border-2 border-transparent rounded-2xl px-4 py-3 text-sm font-medium focus:bg-white focus:border-blue-500 outline-none" />
+                  <button onClick={addType} className="p-3 bg-blue-600 text-white rounded-2xl hover:bg-blue-700 transition-all"><Plus size={20}/></button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}
