@@ -41,6 +41,9 @@ export default function App() {
   const [expandedBatches, setExpandedBatches] = useState([]);
   const [isDebtCollapsed, setIsDebtCollapsed] = useState(true);
   const [editingBatchId, setEditingBatchId] = useState(null);
+  const [installmentPlans, setInstallmentPlans] = useState([]);
+  const [showInstallmentModal, setShowInstallmentModal] = useState(false);
+  const [showAllInstallments, setShowAllInstallments] = useState(false);
   const DEFAULT_TYPES = ['Compartido', 'Individual', 'Yo debo', 'Préstamo', 'Ingreso'];
   const DEFAULT_CATEGORIES = ['Comida', 'Gastos fijos', 'Cuentas', 'Transporte', 'Diversión', 'Sueldo', 'Otros'];
   const [movTypes, setMovTypes] = useState(DEFAULT_TYPES);
@@ -155,6 +158,81 @@ export default function App() {
     setMovCategories(updated);
     saveCategories(updated);
   };
+
+  // --- CUOTAS ---
+  useEffect(() => {
+    if (!user) return;
+    const ref = doc(db, 'artifacts', APP_COLLECTION_ID, 'users', user.uid, 'config', 'installments');
+    const unsub = onSnapshot(ref, (snap) => {
+      if (snap.exists()) setInstallmentPlans(snap.data().plans || []);
+    });
+    return () => unsub();
+  }, [user]);
+
+  const saveInstallmentPlans = async (plans) => {
+    if (!user) return;
+    await setDoc(doc(db, 'artifacts', APP_COLLECTION_ID, 'users', user.uid, 'config', 'installments'), { plans });
+  };
+
+  const handleAddInstallment = (e) => {
+    e.preventDefault();
+    const f = new FormData(e.target);
+    const newPlan = {
+      id: Date.now().toString(),
+      concept: f.get('concept'),
+      monthlyAmount: parseRawNumber(f.get('monthlyAmount')),
+      installments: parseInt(f.get('installments'), 10),
+      startMonth: f.get('startMonth'),
+      type: f.get('type'),
+      category: f.get('category'),
+      paidMonths: []
+    };
+    const updated = [...installmentPlans, newPlan];
+    setInstallmentPlans(updated);
+    saveInstallmentPlans(updated);
+    setShowInstallmentModal(false);
+    e.target.reset();
+  };
+
+  const deleteInstallmentPlan = (id) => {
+    const updated = installmentPlans.filter(p => p.id !== id);
+    setInstallmentPlans(updated);
+    saveInstallmentPlans(updated);
+  };
+
+  const toggleInstallmentPaid = (planId) => {
+    const updated = installmentPlans.map(plan => {
+      if (plan.id !== planId) return plan;
+      const paidMonths = plan.paidMonths || [];
+      return {
+        ...plan,
+        paidMonths: paidMonths.includes(monthKey)
+          ? paidMonths.filter(m => m !== monthKey)
+          : [...paidMonths, monthKey]
+      };
+    });
+    setInstallmentPlans(updated);
+    saveInstallmentPlans(updated);
+  };
+
+  const getInstallmentStatus = (plan) => {
+    const currYear = currentDate.getFullYear();
+    const currMonth = currentDate.getMonth() + 1;
+    const [startYear, startMonthNum] = plan.startMonth.split('-').map(Number);
+    const monthsElapsed = (currYear - startYear) * 12 + (currMonth - startMonthNum);
+    const installmentNumber = monthsElapsed + 1;
+    const isActive = installmentNumber >= 1 && installmentNumber <= plan.installments;
+    const isFinished = installmentNumber > plan.installments;
+    const isPaid = (plan.paidMonths || []).includes(monthKey);
+    const myPart = plan.type === 'Compartido' ? plan.monthlyAmount / 2 : plan.monthlyAmount;
+    return { installmentNumber, isActive, isFinished, isPaid, myPart };
+  };
+
+  const activeInstallments = installmentPlans.map(plan => {
+    const status = getInstallmentStatus(plan);
+    if (!status.isActive) return null;
+    return { ...plan, amount: plan.monthlyAmount, ...status };
+  }).filter(Boolean);
 
   // --- CARGA DE DATOS ---
   useEffect(() => {
@@ -529,7 +607,7 @@ export default function App() {
     if(csvInputRef.current) csvInputRef.current.value = ''; // Resetear el input
   };
 
-  const allMovements = [...movements, ...tcBatches.flatMap(b => b.items.filter(i => !i.isExcluded))];
+  const allMovements = [...movements, ...tcBatches.flatMap(b => b.items.filter(i => !i.isExcluded)), ...activeInstallments];
 
   const totals = allMovements.reduce((acc, m) => {
     if (m.isPaid) return acc;
@@ -830,7 +908,63 @@ export default function App() {
                 );
               })}
             </div>
-          </div>          
+
+            {/* Cuotas */}
+            <div className="space-y-4">
+              <div className="flex justify-between items-center px-2">
+                <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Compras en Cuotas</h3>
+                <button onClick={() => setShowInstallmentModal(true)} className="p-1.5 bg-blue-600 text-white rounded-lg shadow-sm hover:bg-blue-700 transition-all"><Plus size={16}/></button>
+              </div>
+
+              {activeInstallments.length === 0 && (
+                <p className="text-xs text-slate-400 text-center py-3">Sin cuotas activas este mes</p>
+              )}
+
+              {activeInstallments.map(inst => (
+                <div key={inst.id} className={`bg-white p-5 rounded-[2rem] border shadow-sm transition-all ${inst.isPaid ? 'opacity-40 border-slate-100' : 'border-slate-200'}`}>
+                  <div className="flex justify-between items-start mb-3">
+                    <div>
+                      <p className="font-black text-sm text-slate-700 leading-tight">{inst.concept}</p>
+                      <p className="text-[9px] font-bold text-slate-400 uppercase mt-0.5">{inst.category}</p>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <span className={`text-[9px] font-black px-2 py-1 rounded-lg uppercase ${inst.type === 'Compartido' ? 'bg-blue-100 text-blue-700' : inst.type === 'Yo debo' ? 'bg-red-100 text-red-700' : 'bg-purple-100 text-purple-700'}`}>{inst.type}</span>
+                      <span className="text-[9px] font-black bg-slate-100 text-slate-600 px-2 py-1 rounded-lg">{inst.installmentNumber}/{inst.installments}</span>
+                      <button onClick={() => deleteInstallmentPlan(inst.id)} className="p-1 text-slate-300 hover:text-red-500 transition-all"><Trash2 size={13}/></button>
+                    </div>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <div>
+                      <p className="text-base font-black text-slate-800">{formatCLP(inst.monthlyAmount)}</p>
+                      {inst.type === 'Compartido' && <p className="text-[10px] text-slate-400">Mi parte: {formatCLP(inst.monthlyAmount / 2)}</p>}
+                      {inst.type === 'Yo debo' && <p className="text-[10px] text-red-400">Le debo a Karla</p>}
+                    </div>
+                    <button onClick={() => toggleInstallmentPaid(inst.id)} className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-[10px] font-black transition-all ${inst.isPaid ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-500 hover:bg-green-50 hover:text-green-600'}`}>
+                      <CheckCircle2 size={13}/>{inst.isPaid ? 'PAGADA' : 'PAGAR'}
+                    </button>
+                  </div>
+                </div>
+              ))}
+
+              {installmentPlans.filter(p => !activeInstallments.find(a => a.id === p.id)).length > 0 && (
+                <button onClick={() => setShowAllInstallments(!showAllInstallments)} className="w-full text-[9px] font-black text-slate-400 uppercase text-center py-2 hover:text-slate-600 transition-colors">
+                  {showAllInstallments ? '▲ Ocultar' : `▼ Ver planes inactivos (${installmentPlans.filter(p => !activeInstallments.find(a => a.id === p.id)).length})`}
+                </button>
+              )}
+              {showAllInstallments && installmentPlans.filter(p => !activeInstallments.find(a => a.id === p.id)).map(plan => {
+                const s = getInstallmentStatus(plan);
+                return (
+                  <div key={plan.id} className="bg-slate-50 p-4 rounded-[2rem] border border-slate-100 opacity-50 flex justify-between items-center">
+                    <div>
+                      <p className="font-black text-sm text-slate-600">{plan.concept}</p>
+                      <p className="text-[9px] text-slate-400 uppercase font-bold">{s.isFinished ? 'Finalizada' : 'Futura'} · {plan.installments} cuotas · {formatCLP(plan.monthlyAmount)}/mes</p>
+                    </div>
+                    <button onClick={() => deleteInstallmentPlan(plan.id)} className="p-1.5 text-slate-300 hover:text-red-500 transition-all"><Trash2 size={14}/></button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
 
           {/* Historial */}
           <div className="lg:col-span-2">
@@ -1006,6 +1140,46 @@ export default function App() {
                 </div>
               </>
             )}
+          </div>
+        </div>
+      )}
+
+      {showInstallmentModal && (
+        <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-md z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-[3rem] p-8 w-full max-w-md">
+            <div className="flex justify-between items-center mb-6">
+              <h3 className="font-black text-2xl">Nueva Cuota</h3>
+              <button onClick={() => setShowInstallmentModal(false)} className="p-2 text-slate-400 hover:bg-slate-100 rounded-xl"><X size={20}/></button>
+            </div>
+            <form onSubmit={handleAddInstallment} className="space-y-4">
+              <input name="concept" placeholder="Nombre (ej. TV Samsung, Sofá)" required className="w-full bg-slate-50 border-2 border-transparent rounded-2xl p-4 text-sm font-medium focus:bg-white focus:border-blue-500 outline-none" />
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[9px] font-black text-slate-400 uppercase block mb-1 ml-1">Monto por cuota</label>
+                  <input name="monthlyAmount" placeholder="$ 0" onChange={e => e.target.value = formatInputNumber(e.target.value)} required className="w-full bg-slate-50 border-2 border-transparent rounded-2xl p-4 text-sm font-black focus:bg-white focus:border-blue-500 outline-none" />
+                </div>
+                <div>
+                  <label className="text-[9px] font-black text-slate-400 uppercase block mb-1 ml-1">N° de cuotas</label>
+                  <input name="installments" type="number" min="2" max="60" placeholder="12" required className="w-full bg-slate-50 border-2 border-transparent rounded-2xl p-4 text-sm font-black focus:bg-white focus:border-blue-500 outline-none" />
+                </div>
+              </div>
+              <div>
+                <label className="text-[9px] font-black text-slate-400 uppercase block mb-1 ml-1">Mes de inicio (cuota 1)</label>
+                <input name="startMonth" type="month" defaultValue={monthKey} required className="w-full bg-slate-50 border-2 border-transparent rounded-2xl p-4 text-sm font-bold focus:bg-white focus:border-blue-500 outline-none" />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <select name="type" className="w-full bg-slate-50 border-2 border-transparent rounded-2xl px-3 py-4 text-sm font-bold outline-none">
+                  {movTypes.map(t => <option key={t} value={t}>{t}</option>)}
+                </select>
+                <select name="category" className="w-full bg-slate-50 border-2 border-transparent rounded-2xl px-3 py-4 text-sm font-medium outline-none">
+                  {movCategories.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+              </div>
+              <div className="flex gap-3 pt-2">
+                <button type="button" onClick={() => setShowInstallmentModal(false)} className="flex-1 py-4 bg-slate-100 text-slate-500 font-black rounded-2xl">CANCELAR</button>
+                <button type="submit" className="flex-1 py-4 bg-blue-600 text-white font-black rounded-2xl shadow-xl shadow-blue-100">GUARDAR</button>
+              </div>
+            </form>
           </div>
         </div>
       )}
