@@ -4,8 +4,8 @@ import { getFirestore, doc, setDoc, onSnapshot } from 'firebase/firestore';
 import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signOut } from 'firebase/auth';
 import { 
   ChevronLeft, ChevronRight, Trash2, ReceiptText, ChevronUp, ChevronDown, Eye, EyeOff,
-  CheckCircle2, Camera, Loader2, Edit2, Save, Image as ImageIcon, LogOut, Plus, 
-  CreditCard, Wallet, ArrowRightLeft, Copy, Check, Download, Upload, ShieldCheck
+  CheckCircle2, Camera, Loader2, Edit2, Save, Image as ImageIcon, LogOut, Plus,
+  CreditCard, Wallet, ArrowRightLeft, Copy, Check, Download, Upload, ShieldCheck, Settings, X
 } from 'lucide-react';
 
 // --- CONFIGURACIÓN FIREBASE ---
@@ -41,6 +41,10 @@ export default function App() {
   const [expandedBatches, setExpandedBatches] = useState([]);
   const [isDebtCollapsed, setIsDebtCollapsed] = useState(true);
   const [editingBatchId, setEditingBatchId] = useState(null);
+  const DEFAULT_TYPES = ['Compartido', 'Individual', 'Yo debo', 'Préstamo', 'Ingreso'];
+  const [movTypes, setMovTypes] = useState(DEFAULT_TYPES);
+  const [showTypesModal, setShowTypesModal] = useState(false);
+  const [newTypeName, setNewTypeName] = useState('');
   
   const camInputRef = useRef(null);
   const galleryInputRef = useRef(null);
@@ -85,6 +89,37 @@ export default function App() {
       console.error("Error completo:", err);
       alert("Error al iniciar sesión: " + err.message);
     }
+  };
+
+  // --- TIPOS ---
+  useEffect(() => {
+    if (!user) return;
+    const configRef = doc(db, 'artifacts', APP_COLLECTION_ID, 'users', user.uid, 'config', 'types');
+    const unsub = onSnapshot(configRef, (snap) => {
+      if (snap.exists() && snap.data().list?.length > 0) setMovTypes(snap.data().list);
+    });
+    return () => unsub();
+  }, [user]);
+
+  const saveTypes = async (newTypes) => {
+    if (!user) return;
+    await setDoc(doc(db, 'artifacts', APP_COLLECTION_ID, 'users', user.uid, 'config', 'types'), { list: newTypes });
+  };
+
+  const addType = () => {
+    const name = newTypeName.trim();
+    if (!name || movTypes.includes(name)) return;
+    const updated = [...movTypes, name];
+    setMovTypes(updated);
+    saveTypes(updated);
+    setNewTypeName('');
+  };
+
+  const deleteType = (name) => {
+    if (DEFAULT_TYPES.includes(name)) return;
+    const updated = movTypes.filter(t => t !== name);
+    setMovTypes(updated);
+    saveTypes(updated);
   };
 
   // --- CARGA DE DATOS ---
@@ -435,6 +470,8 @@ export default function App() {
     else if (m.type === 'Yo debo') {
       acc.indiv += m.amount;
       acc.debt -= m.amount;
+    } else {
+      acc.indiv += m.amount;
     }
     return acc;
   }, { income: 0, indiv: 0, shared: 0, debt: 0 });
@@ -507,6 +544,9 @@ export default function App() {
               <Download size={16} /> <span className="text-[10px] font-black uppercase hidden lg:inline">Exportar</span>
             </button>
 
+            <button onClick={() => setShowTypesModal(true)} className="p-1.5 bg-slate-50 text-slate-700 rounded-xl border border-slate-200 hover:bg-slate-100 transition-all flex items-center gap-1 shadow-sm" title="Gestionar tipos">
+              <Settings size={16} /> <span className="text-[10px] font-black uppercase hidden lg:inline">Tipos</span>
+            </button>
             <button onClick={() => signOut(auth)} className="ml-2 p-1.5 bg-red-50 text-red-600 rounded-xl border border-red-100 hover:bg-red-100 transition-all flex items-center gap-1 shadow-sm" title="Cerrar Sesión">
               <LogOut size={16} /> <span className="text-[10px] font-black uppercase hidden lg:inline">Salir</span>
             </button>
@@ -594,11 +634,7 @@ export default function App() {
                 <div className="grid grid-cols-2 gap-3">
                   <input name="amount" placeholder="$ 0" onChange={e => e.target.value = formatInputNumber(e.target.value)} className="w-full bg-slate-50 border-2 border-transparent rounded-2xl p-4 text-sm font-black focus:bg-white focus:border-blue-500 outline-none" required />
                   <select name="type" className="w-full bg-slate-50 border-2 border-transparent rounded-2xl px-3 py-4 text-sm font-bold outline-none">
-                    <option value="Compartido">Compartido</option>
-                    <option value="Individual">Personal</option>
-                    <option value="Yo debo">Yo debo (a Karla)</option>
-                    <option value="Préstamo">Préstamo</option>
-                    <option value="Ingreso">Ingreso</option>
+                    {movTypes.map(t => <option key={t} value={t}>{t}</option>)}
                   </select>
                 </div>
                 <select name="category" className="w-full bg-slate-50 border-2 border-transparent rounded-2xl px-4 py-4 text-sm font-medium outline-none">
@@ -755,11 +791,7 @@ export default function App() {
                         <td className="px-6 py-4">
                           {editingId === m.id ? (
                             <select className="border-2 border-blue-200 rounded-xl px-1 py-1 font-bold text-xs" value={m.type} onChange={e => handleUpdate(m.id, 'type', e.target.value)}>
-                              <option value="Compartido">Compartido</option>
-                              <option value="Individual">Personal</option>
-                              <option value="Yo debo">Yo debo</option>
-                              <option value="Préstamo">Préstamo</option>
-                              <option value="Ingreso">Ingreso</option>
+                              {movTypes.map(t => <option key={t} value={t}>{t}</option>)}
                             </select>
                           ) : (
                             <span className={`text-[9px] font-black px-2 py-1 rounded-lg uppercase ${m.type === 'Ingreso' ? 'bg-green-100 text-green-700' : m.type === 'Préstamo' ? 'bg-amber-100 text-amber-700' : m.type === 'Yo debo' ? 'bg-red-100 text-red-700' : m.type === 'Individual' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'}`}>{m.type}</span>
@@ -839,6 +871,39 @@ export default function App() {
               <button disabled={balances.itau < balances.tc_deuda} onClick={() => handlePayTC('itau')} className="p-6 bg-slate-50 border-2 rounded-3xl font-black text-lg hover:border-blue-500 transition-all flex justify-between disabled:opacity-50"><span>Itaú</span> <span>{formatCLP(balances.itau)}</span></button>
               <button disabled={balances.scotia < balances.tc_deuda} onClick={() => handlePayTC('scotia')} className="p-6 bg-slate-50 border-2 rounded-3xl font-black text-lg hover:border-red-500 transition-all flex justify-between disabled:opacity-50"><span>Scotia</span> <span>{formatCLP(balances.scotia)}</span></button>
               <button onClick={() => setShowTCPaymentModal(false)} className="py-4 text-slate-400 font-black uppercase text-xs text-center mt-2">Cancelar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showTypesModal && (
+        <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-md z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-[3rem] p-8 w-full max-w-md">
+            <div className="flex justify-between items-center mb-6">
+              <h3 className="font-black text-2xl">Tipos de Gasto</h3>
+              <button onClick={() => setShowTypesModal(false)} className="p-2 text-slate-400 hover:bg-slate-100 rounded-xl"><X size={20}/></button>
+            </div>
+            <div className="space-y-2 mb-6 max-h-64 overflow-y-auto">
+              {movTypes.map(t => (
+                <div key={t} className="flex items-center justify-between bg-slate-50 px-4 py-3 rounded-2xl">
+                  <span className="font-bold text-sm">{t}</span>
+                  {DEFAULT_TYPES.includes(t) ? (
+                    <span className="text-[9px] font-black text-slate-400 uppercase px-2 py-1 bg-slate-200 rounded-lg">Base</span>
+                  ) : (
+                    <button onClick={() => deleteType(t)} className="p-1.5 text-slate-400 hover:text-red-500 transition-colors"><Trash2 size={15}/></button>
+                  )}
+                </div>
+              ))}
+            </div>
+            <div className="flex gap-2">
+              <input
+                value={newTypeName}
+                onChange={e => setNewTypeName(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && addType()}
+                placeholder="Nuevo tipo..."
+                className="flex-1 bg-slate-50 border-2 border-transparent rounded-2xl px-4 py-3 text-sm font-medium focus:bg-white focus:border-blue-500 outline-none"
+              />
+              <button onClick={addType} className="p-3 bg-blue-600 text-white rounded-2xl hover:bg-blue-700 transition-all"><Plus size={20}/></button>
             </div>
           </div>
         </div>
