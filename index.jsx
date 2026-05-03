@@ -52,6 +52,8 @@ export default function App() {
   const [modalTab, setModalTab] = useState('categorias');
   const [newTypeName, setNewTypeName] = useState('');
   const [newCategoryName, setNewCategoryName] = useState('');
+  const [instTotal, setInstTotal] = useState('');
+  const [instCount, setInstCount] = useState('');
   
   const camInputRef = useRef(null);
   const galleryInputRef = useRef(null);
@@ -177,11 +179,15 @@ export default function App() {
   const handleAddInstallment = (e) => {
     e.preventDefault();
     const f = new FormData(e.target);
+    const totalAmount = parseRawNumber(f.get('totalAmount'));
+    const installments = parseInt(f.get('installments'), 10);
+    const monthlyAmount = Math.round(totalAmount / installments);
     const newPlan = {
       id: Date.now().toString(),
       concept: f.get('concept'),
-      monthlyAmount: parseRawNumber(f.get('monthlyAmount')),
-      installments: parseInt(f.get('installments'), 10),
+      totalAmount,
+      monthlyAmount,
+      installments,
       startMonth: f.get('startMonth'),
       type: f.get('type'),
       category: f.get('category'),
@@ -191,6 +197,8 @@ export default function App() {
     setInstallmentPlans(updated);
     saveInstallmentPlans(updated);
     setShowInstallmentModal(false);
+    setInstTotal('');
+    setInstCount('');
     e.target.reset();
   };
 
@@ -1131,14 +1139,20 @@ export default function App() {
               <input name="concept" placeholder="Nombre (ej. TV Samsung, Sofá)" required className="w-full bg-slate-50 border-2 border-transparent rounded-2xl p-4 text-sm font-medium focus:bg-white focus:border-blue-500 outline-none" />
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="text-[9px] font-black text-slate-400 uppercase block mb-1 ml-1">Monto por cuota</label>
-                  <input name="monthlyAmount" placeholder="$ 0" onChange={e => e.target.value = formatInputNumber(e.target.value)} required className="w-full bg-slate-50 border-2 border-transparent rounded-2xl p-4 text-sm font-black focus:bg-white focus:border-blue-500 outline-none" />
+                  <label className="text-[9px] font-black text-slate-400 uppercase block mb-1 ml-1">Precio total</label>
+                  <input name="totalAmount" placeholder="$ 0" value={instTotal} onChange={e => setInstTotal(formatInputNumber(e.target.value))} required className="w-full bg-slate-50 border-2 border-transparent rounded-2xl p-4 text-sm font-black focus:bg-white focus:border-blue-500 outline-none" />
                 </div>
                 <div>
                   <label className="text-[9px] font-black text-slate-400 uppercase block mb-1 ml-1">N° de cuotas</label>
-                  <input name="installments" type="number" min="2" max="60" placeholder="12" required className="w-full bg-slate-50 border-2 border-transparent rounded-2xl p-4 text-sm font-black focus:bg-white focus:border-blue-500 outline-none" />
+                  <input name="installments" type="number" min="2" max="60" placeholder="12" value={instCount} onChange={e => setInstCount(e.target.value)} required className="w-full bg-slate-50 border-2 border-transparent rounded-2xl p-4 text-sm font-black focus:bg-white focus:border-blue-500 outline-none" />
                 </div>
               </div>
+              {instTotal && instCount && parseInt(instCount) >= 2 && (
+                <div className="bg-blue-50 border border-blue-100 rounded-2xl px-4 py-3 flex justify-between items-center">
+                  <span className="text-xs font-black text-blue-500 uppercase">Cuota mensual</span>
+                  <span className="font-black text-blue-700">{formatCLP(Math.round(parseRawNumber(instTotal) / parseInt(instCount)))}</span>
+                </div>
+              )}
               <div>
                 <label className="text-[9px] font-black text-slate-400 uppercase block mb-1 ml-1">Mes de inicio (cuota 1)</label>
                 <input name="startMonth" type="month" defaultValue={monthKey} required className="w-full bg-slate-50 border-2 border-transparent rounded-2xl p-4 text-sm font-bold focus:bg-white focus:border-blue-500 outline-none" />
@@ -1152,7 +1166,7 @@ export default function App() {
                 </select>
               </div>
               <div className="flex gap-3 pt-2">
-                <button type="button" onClick={() => setShowInstallmentModal(false)} className="flex-1 py-4 bg-slate-100 text-slate-500 font-black rounded-2xl">CANCELAR</button>
+                <button type="button" onClick={() => { setShowInstallmentModal(false); setInstTotal(''); setInstCount(''); }} className="flex-1 py-4 bg-slate-100 text-slate-500 font-black rounded-2xl">CANCELAR</button>
                 <button type="submit" className="flex-1 py-4 bg-blue-600 text-white font-black rounded-2xl shadow-xl shadow-blue-100">GUARDAR</button>
               </div>
             </form>
