@@ -49,6 +49,8 @@ export default function App() {
   const [evidence, setEvidence] = useState([]);
   const [showEvidence, setShowEvidence] = useState(false);
   const [evidenceViewer, setEvidenceViewer] = useState(null);
+  const [editingFixedId, setEditingFixedId] = useState(null);
+  const [editingFixedData, setEditingFixedData] = useState({});
   const evidenceInputRef = useRef(null);
   const DEFAULT_TYPES = ['Compartido', 'Individual', 'Yo debo', 'Préstamo', 'Ingreso'];
   const DEFAULT_CATEGORIES = ['Comida', 'Gastos fijos', 'Cuentas', 'Transporte', 'Diversión', 'Sueldo', 'Otros'];
@@ -216,6 +218,25 @@ export default function App() {
     });
     setFixedExpenses(updated);
     saveFixedExpenses(updated);
+  };
+
+  const startEditFixed = (exp) => {
+    setEditingFixedId(exp.id);
+    setEditingFixedData({ concept: exp.concept, amount: String(exp.amount) });
+  };
+
+  const saveFixedEdit = (exp) => {
+    const newAmount = parseInt(String(editingFixedData.amount).replace(/\D/g, ''), 10) || 0;
+    const newConcept = editingFixedData.concept.trim() || exp.concept;
+    const isShared = exp.type === 'Compartido';
+    const newMyPart = isShared ? Math.round(newAmount / 2) : newAmount;
+    const updated = fixedExpenses.map(e =>
+      e.id === exp.id ? { ...e, concept: newConcept, amount: newAmount, myPart: newMyPart } : e
+    );
+    setFixedExpenses(updated);
+    saveFixedExpenses(updated);
+    setEditingFixedId(null);
+    setEditingFixedData({});
   };
 
   // --- CUOTAS ---
@@ -1099,30 +1120,62 @@ export default function App() {
                   </thead>
                   <tbody className="divide-y divide-slate-50">
                     {/* Gastos fijos — siempre al inicio */}
-                    {[...activeFixedExpenses].sort((a, b) => a.isPaid - b.isPaid).map(exp => (
+                    {[...activeFixedExpenses].sort((a, b) => a.isPaid - b.isPaid).map(exp => {
+                      const isEditing = editingFixedId === exp.id;
+                      return (
                       <tr key={'fix_' + exp.id} className={`group border-l-4 border-l-green-400 ${exp.isPaid ? 'opacity-30' : 'bg-green-50/20 hover:bg-green-50/40'}`}>
                         <td className="px-6 py-4">
-                          <div>
-                            <div className="flex items-center gap-2">
-                              <p className="font-bold text-slate-800">{exp.concept}</p>
-                              <span className="text-[8px] font-black bg-green-100 text-green-700 px-1.5 py-0.5 rounded-md">Fijo</span>
+                          {isEditing ? (
+                            <input
+                              autoFocus
+                              value={editingFixedData.concept}
+                              onChange={e => setEditingFixedData(d => ({ ...d, concept: e.target.value }))}
+                              className="w-full bg-white border-2 border-green-400 rounded-xl px-3 py-1.5 text-sm font-medium outline-none"
+                            />
+                          ) : (
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <p className="font-bold text-slate-800">{exp.concept}</p>
+                                <span className="text-[8px] font-black bg-green-100 text-green-700 px-1.5 py-0.5 rounded-md">Fijo</span>
+                              </div>
+                              <p className="text-[10px] text-slate-400 uppercase font-bold">{exp.category}</p>
                             </div>
-                            <p className="text-[10px] text-slate-400 uppercase font-bold">{exp.category}</p>
-                          </div>
+                          )}
                         </td>
                         <td className="px-6 py-4">
                           <span className={`text-[9px] font-black px-2 py-1 rounded-lg uppercase ${exp.type === 'Yo debo' ? 'bg-red-100 text-red-700' : exp.type === 'Individual' ? 'bg-purple-100 text-purple-700' : exp.type === 'Ingreso' ? 'bg-green-100 text-green-700' : 'bg-blue-100 text-blue-700'}`}>{exp.type}</span>
                         </td>
-                        <td className="px-6 py-4 text-right font-medium">{formatCLP(exp.amount)}</td>
+                        <td className="px-6 py-4 text-right font-medium">
+                          {isEditing ? (
+                            <input
+                              type="text"
+                              inputMode="numeric"
+                              value={editingFixedData.amount}
+                              onChange={e => setEditingFixedData(d => ({ ...d, amount: e.target.value.replace(/\D/g, '') }))}
+                              className="w-28 bg-white border-2 border-green-400 rounded-xl px-3 py-1.5 text-sm font-medium text-right outline-none"
+                            />
+                          ) : formatCLP(exp.amount)}
+                        </td>
                         <td className="px-6 py-4 text-right font-black text-blue-600">{formatCLP(exp.myPart)}</td>
                         <td className="px-6 py-4 text-right">
                           <div className="flex justify-end gap-1">
-                            <button onClick={() => toggleFixedPaid(exp.id)} title={exp.isPaid ? 'Desmarcar' : 'Marcar como pagado'} className={`p-2 transition-colors ${exp.isPaid ? 'text-green-500' : 'text-slate-300 hover:text-green-500'}`}><CheckCircle2 size={18}/></button>
-                            <button onClick={() => deleteFixedExpense(exp.id)} className="p-2 text-slate-300 hover:text-red-500 transition-colors"><Trash2 size={18}/></button>
+                            {isEditing ? (
+                              <>
+                                <button onClick={() => saveFixedEdit(exp)} className="p-2 text-green-500 hover:text-green-700 transition-colors"><Save size={18}/></button>
+                                <button onClick={() => { setEditingFixedId(null); setEditingFixedData({}); }} className="p-2 text-slate-300 hover:text-slate-500 transition-colors"><X size={18}/></button>
+                              </>
+                            ) : (
+                              <>
+                                <button onClick={() => startEditFixed(exp)} className="p-2 text-slate-300 hover:text-blue-500 transition-colors opacity-0 group-hover:opacity-100"><Edit2 size={18}/></button>
+                                <button onClick={() => toggleFixedPaid(exp.id)} title={exp.isPaid ? 'Desmarcar' : 'Marcar como pagado'} className={`p-2 transition-colors ${exp.isPaid ? 'text-green-500' : 'text-slate-300 hover:text-green-500'}`}><CheckCircle2 size={18}/></button>
+                                <button onClick={() => deleteFixedExpense(exp.id)} className="p-2 text-slate-300 hover:text-red-500 transition-colors"><Trash2 size={18}/></button>
+                              </>
+                            )}
                           </div>
                         </td>
                       </tr>
-                    ))}
+                      );
+                    })}
                     {/* Cuotas activas — siempre al inicio */}
                     {[...activeInstallments].sort((a, b) => a.isPaid - b.isPaid).map(inst => (
                       <tr key={'inst_' + inst.id} className={`group border-l-4 border-l-blue-400 ${inst.isPaid ? 'opacity-30' : 'bg-blue-50/20 hover:bg-blue-50/40'}`}>
