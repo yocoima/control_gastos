@@ -327,6 +327,20 @@ export default function App() {
     saveToCloud(movements, balances, tcBatches, updated);
   };
 
+  const latestAddEvidence = useRef(null);
+  latestAddEvidence.current = addEvidence;
+
+  useEffect(() => {
+    if (!showEvidence) return;
+    const handler = (e) => {
+      if (e.target.closest('input, textarea, select')) return;
+      const imageItem = Array.from(e.clipboardData?.items || []).find(i => i.type.startsWith('image/'));
+      if (imageItem) latestAddEvidence.current(imageItem.getAsFile());
+    };
+    document.addEventListener('paste', handler);
+    return () => document.removeEventListener('paste', handler);
+  }, [showEvidence]);
+
   const activeFixedExpenses = fixedExpenses.filter(exp => {
     if (exp.startMonth > monthKey) return false;
     if (exp.endMonth && exp.endMonth < monthKey) return false;
@@ -1196,9 +1210,14 @@ export default function App() {
           {showEvidence && (
             <div className="px-6 pb-6">
               <input type="file" ref={evidenceInputRef} accept="image/*" className="hidden" onChange={e => addEvidence(e.target.files[0])} />
-              <button onClick={() => evidenceInputRef.current?.click()} className="mb-4 flex items-center gap-2 px-4 py-2 bg-slate-900 text-white rounded-2xl text-xs font-black hover:bg-slate-700 transition-all">
-                <Camera size={14}/> SUBIR PANTALLAZO
-              </button>
+              <div className="flex gap-3 mb-4">
+                <button onClick={() => evidenceInputRef.current?.click()} className="flex items-center gap-2 px-4 py-2 bg-slate-900 text-white rounded-2xl text-xs font-black hover:bg-slate-700 transition-all">
+                  <Camera size={14}/> SUBIR ARCHIVO
+                </button>
+                <div className="flex-1 flex items-center justify-center border-2 border-dashed border-slate-200 rounded-2xl px-4 py-2 text-xs text-slate-400 font-bold select-none bg-slate-50/50">
+                  Ctrl+V para pegar imagen
+                </div>
+              </div>
               {evidence.length === 0 && <p className="text-xs text-slate-400 text-center py-6">Sin evidencias subidas este mes</p>}
               <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-3">
                 {evidence.map(ev => (
