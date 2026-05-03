@@ -909,67 +909,17 @@ export default function App() {
               })}
             </div>
 
-            {/* Cuotas */}
-            <div className="space-y-4">
-              <div className="flex justify-between items-center px-2">
-                <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Compras en Cuotas</h3>
-                <button onClick={() => setShowInstallmentModal(true)} className="p-1.5 bg-blue-600 text-white rounded-lg shadow-sm hover:bg-blue-700 transition-all"><Plus size={16}/></button>
-              </div>
-
-              {activeInstallments.length === 0 && (
-                <p className="text-xs text-slate-400 text-center py-3">Sin cuotas activas este mes</p>
-              )}
-
-              {activeInstallments.map(inst => (
-                <div key={inst.id} className={`bg-white p-5 rounded-[2rem] border shadow-sm transition-all ${inst.isPaid ? 'opacity-40 border-slate-100' : 'border-slate-200'}`}>
-                  <div className="flex justify-between items-start mb-3">
-                    <div>
-                      <p className="font-black text-sm text-slate-700 leading-tight">{inst.concept}</p>
-                      <p className="text-[9px] font-bold text-slate-400 uppercase mt-0.5">{inst.category}</p>
-                    </div>
-                    <div className="flex items-center gap-1.5">
-                      <span className={`text-[9px] font-black px-2 py-1 rounded-lg uppercase ${inst.type === 'Compartido' ? 'bg-blue-100 text-blue-700' : inst.type === 'Yo debo' ? 'bg-red-100 text-red-700' : 'bg-purple-100 text-purple-700'}`}>{inst.type}</span>
-                      <span className="text-[9px] font-black bg-slate-100 text-slate-600 px-2 py-1 rounded-lg">{inst.installmentNumber}/{inst.installments}</span>
-                      <button onClick={() => deleteInstallmentPlan(inst.id)} className="p-1 text-slate-300 hover:text-red-500 transition-all"><Trash2 size={13}/></button>
-                    </div>
-                  </div>
-                  <div className="flex justify-between items-center">
-                    <div>
-                      <p className="text-base font-black text-slate-800">{formatCLP(inst.monthlyAmount)}</p>
-                      {inst.type === 'Compartido' && <p className="text-[10px] text-slate-400">Mi parte: {formatCLP(inst.monthlyAmount / 2)}</p>}
-                      {inst.type === 'Yo debo' && <p className="text-[10px] text-red-400">Le debo a Karla</p>}
-                    </div>
-                    <button onClick={() => toggleInstallmentPaid(inst.id)} className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-[10px] font-black transition-all ${inst.isPaid ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-500 hover:bg-green-50 hover:text-green-600'}`}>
-                      <CheckCircle2 size={13}/>{inst.isPaid ? 'PAGADA' : 'PAGAR'}
-                    </button>
-                  </div>
-                </div>
-              ))}
-
-              {installmentPlans.filter(p => !activeInstallments.find(a => a.id === p.id)).length > 0 && (
-                <button onClick={() => setShowAllInstallments(!showAllInstallments)} className="w-full text-[9px] font-black text-slate-400 uppercase text-center py-2 hover:text-slate-600 transition-colors">
-                  {showAllInstallments ? '▲ Ocultar' : `▼ Ver planes inactivos (${installmentPlans.filter(p => !activeInstallments.find(a => a.id === p.id)).length})`}
-                </button>
-              )}
-              {showAllInstallments && installmentPlans.filter(p => !activeInstallments.find(a => a.id === p.id)).map(plan => {
-                const s = getInstallmentStatus(plan);
-                return (
-                  <div key={plan.id} className="bg-slate-50 p-4 rounded-[2rem] border border-slate-100 opacity-50 flex justify-between items-center">
-                    <div>
-                      <p className="font-black text-sm text-slate-600">{plan.concept}</p>
-                      <p className="text-[9px] text-slate-400 uppercase font-bold">{s.isFinished ? 'Finalizada' : 'Futura'} · {plan.installments} cuotas · {formatCLP(plan.monthlyAmount)}/mes</p>
-                    </div>
-                    <button onClick={() => deleteInstallmentPlan(plan.id)} className="p-1.5 text-slate-300 hover:text-red-500 transition-all"><Trash2 size={14}/></button>
-                  </div>
-                );
-              })}
-            </div>
           </div>
 
           {/* Historial */}
           <div className="lg:col-span-2">
             <div className="bg-white rounded-[2.5rem] border border-slate-200 shadow-sm overflow-hidden">
-              <div className="p-6 border-b flex justify-between items-center bg-slate-50/50 font-black">Historial del Mes</div>
+              <div className="p-6 border-b flex justify-between items-center bg-slate-50/50 font-black">
+                <span>Historial del Mes</span>
+                <button onClick={() => setShowInstallmentModal(true)} className="flex items-center gap-1.5 px-3 py-2 bg-blue-600 text-white rounded-xl text-[10px] font-black hover:bg-blue-700 transition-all shadow-sm">
+                  <Plus size={14}/> CUOTA
+                </button>
+              </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead className="bg-white text-[10px] font-black text-slate-400 uppercase tracking-widest border-b">
@@ -982,6 +932,32 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-50">
+                    {/* Cuotas activas — siempre al inicio */}
+                    {[...activeInstallments].sort((a, b) => a.isPaid - b.isPaid).map(inst => (
+                      <tr key={'inst_' + inst.id} className={`group border-l-4 border-l-blue-400 ${inst.isPaid ? 'opacity-30' : 'bg-blue-50/20 hover:bg-blue-50/40'}`}>
+                        <td className="px-6 py-4">
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <p className="font-bold text-slate-800">{inst.concept}</p>
+                              <span className="text-[8px] font-black bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded-md whitespace-nowrap">{inst.installmentNumber}/{inst.installments}</span>
+                            </div>
+                            <p className="text-[10px] text-slate-400 uppercase font-bold">{inst.category}</p>
+                          </div>
+                        </td>
+                        <td className="px-6 py-4">
+                          <span className={`text-[9px] font-black px-2 py-1 rounded-lg uppercase ${inst.type === 'Yo debo' ? 'bg-red-100 text-red-700' : inst.type === 'Individual' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'}`}>{inst.type}</span>
+                        </td>
+                        <td className="px-6 py-4 text-right font-medium">{formatCLP(inst.monthlyAmount)}</td>
+                        <td className="px-6 py-4 text-right font-black text-blue-600">{formatCLP(inst.myPart)}</td>
+                        <td className="px-6 py-4 text-right">
+                          <div className="flex justify-end gap-1">
+                            <button onClick={() => toggleInstallmentPaid(inst.id)} title={inst.isPaid ? 'Marcar como no pagada' : 'Marcar como pagada'} className={`p-2 transition-colors ${inst.isPaid ? 'text-green-500' : 'text-slate-300 hover:text-green-500'}`}><CheckCircle2 size={18}/></button>
+                            <button onClick={() => deleteInstallmentPlan(inst.id)} className="p-2 text-slate-300 hover:text-red-500 transition-colors"><Trash2 size={18}/></button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                    {/* Movimientos regulares */}
                     {sortedMovements.map(m => (
                       <tr key={m.id} className={`group ${m.isPaid ? 'opacity-30' : 'hover:bg-slate-50'}`}>
                         <td className="px-6 py-4">
