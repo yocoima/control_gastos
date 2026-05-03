@@ -24,7 +24,7 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 const APP_COLLECTION_ID = 'gastos-chile-v2'; // Este es el ID de la colección principal para tus datos
-const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
+const GROQ_API_KEY = import.meta.env.VITE_GROQ_API_KEY;
 export default function App() {
   const [user, setUser] = useState(null);
   const [currentDate, setCurrentDate] = useState(new Date()); 
@@ -135,14 +135,24 @@ export default function App() {
         reader.readAsDataURL(file);
       });
 
-      const prompt = "Analiza esta boleta o factura. Extrae estrictamente un objeto JSON con este formato: {\"concept\": \"nombre del comercio o producto principal\", \"amount\": valor_total_numerico, \"category\": \"una de las categorías permitidas\"}. Categorías: Comida, Gastos fijos, Cuentas, Transporte, Diversión, Otros.";
-      
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`, {
+      const prompt = "Analiza esta boleta o factura. Extrae estrictamente un objeto JSON con este formato: {\"concept\": \"nombre del comercio o producto principal\", \"amount\": valor_total_numerico, \"category\": \"una de las categorías permitidas\"}. Categorías: Comida, Gastos fijos, Cuentas, Transporte, Diversión, Otros. Responde SOLO con el JSON, sin texto adicional.";
+
+      const response = await fetch(`https://api.groq.com/openai/v1/chat/completions`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${GROQ_API_KEY}`
+        },
         body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }, { inlineData: { mimeType: file.type, data: base64Data } }] }],
-          generationConfig: { responseMimeType: "application/json" }
+          model: "meta-llama/llama-4-scout-17b-16e-instruct",
+          messages: [{
+            role: "user",
+            content: [
+              { type: "text", text: prompt },
+              { type: "image_url", image_url: { url: `data:${file.type};base64,${base64Data}` } }
+            ]
+          }],
+          response_format: { type: "json_object" }
         })
       });
 
@@ -152,12 +162,11 @@ export default function App() {
       }
 
       const result = await response.json();
-      if (!result.candidates || result.candidates.length === 0 || !result.candidates[0].content) {
-        console.error("Respuesta completa de IA:", result);
-        throw new Error("La IA no devolvió resultados. Puede que la imagen sea ilegible o haya sido bloqueada por filtros de seguridad.");
+      if (!result.choices || result.choices.length === 0) {
+        throw new Error("La IA no devolvió resultados. Puede que la imagen sea ilegible.");
       }
-      
-      let cleanText = result.candidates[0].content?.parts?.[0]?.text || "";
+
+      let cleanText = result.choices[0].message?.content || "";
       cleanText = cleanText.replace(/```json|```/g, "").trim();
       const data = JSON.parse(cleanText);
       
