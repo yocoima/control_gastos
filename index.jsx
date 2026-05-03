@@ -317,23 +317,10 @@ export default function App() {
   const addEvidence = async (file) => {
     if (!file) return;
     const base64 = await new Promise((resolve, reject) => {
-      const img = new Image();
-      const url = URL.createObjectURL(file);
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        const max = 900;
-        let { width, height } = img;
-        if (width > max || height > max) {
-          if (width > height) { height = (height / width) * max; width = max; }
-          else { width = (width / height) * max; height = max; }
-        }
-        canvas.width = width; canvas.height = height;
-        canvas.getContext('2d').drawImage(img, 0, 0, width, height);
-        URL.revokeObjectURL(url);
-        resolve(canvas.toDataURL('image/jpeg', 0.7));
-      };
-      img.onerror = reject;
-      img.src = url;
+      const reader = new FileReader();
+      reader.onload = (e) => resolve(e.target.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
     });
     const newItem = { id: Date.now().toString(), imageBase64: base64, uploadedAt: new Date().toLocaleString('es-CL') };
     const updated = [...evidence, newItem];
