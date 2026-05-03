@@ -411,29 +411,67 @@ export default function App() {
     const text = e.target.tcData.value;
     const title = e.target.tcTitle.value;
     const comment = e.target.tcComment.value;
-    const lines = text.split('\n');
+    const rawLines = text.split('\n');
     const items = [];
-    
-    lines.forEach(line => {
+    const dateRe = /^\d{2}\/\d{2}\/\d{4}/;
+    const parseAmount = (str) => parseInt(str.replace(/[$. ]/g, ''), 10) || 0;
+
+    let i = 0;
+    while (i < rawLines.length) {
+      const line = rawLines[i];
       const parts = line.split('\t');
-      if (parts.length < 4 || parts[0].toLowerCase().includes('fecha')) return;
-      
-      const amountStr = parts[3].replace(/[$.]/g, '').replace(',', '.');
-      const rawAmount = parseInt(amountStr, 10) || 0;
-      const amount = rawAmount;
-      
-      items.push({
-        id: Date.now().toString() + Math.random(),
-        date: parts[0],
-        concept: parts[1],
-        amount: amount,
-        type: rawAmount < 0 ? 'Ingreso' : 'Individual',
-        category: 'Tarjeta Crédito',
-        myPart: rawAmount < 0 ? 0 : amount,
-        isPaid: false,
-        isExcluded: false
-      });
-    });
+      const firstCol = parts[0].trim();
+
+      if (!line.trim() || firstCol.toLowerCase().includes('fecha')) { i++; continue; }
+
+      if (dateRe.test(firstCol)) {
+        if (parts.length >= 4 && parts[3].trim()) {
+          // Formato estándar: FECHA\tDESC\tCIUDAD\tMONTO
+          const rawAmount = parseAmount(parts[3]);
+          if (rawAmount !== 0) items.push({
+            id: Date.now().toString() + Math.random(),
+            date: firstCol,
+            concept: parts[1].trim(),
+            amount: rawAmount,
+            type: rawAmount < 0 ? 'Ingreso' : 'Individual',
+            category: 'Tarjeta Crédito',
+            myPart: rawAmount < 0 ? 0 : rawAmount,
+            isPaid: false, isExcluded: false
+          });
+          i++;
+        } else {
+          // Formato multilínea: fecha sola, descripción y monto en líneas siguientes
+          const descLines = parts[1]?.trim() ? [parts[1].trim()] : [];
+          let rawAmount = null;
+          i++;
+          while (i < rawLines.length && rawAmount === null) {
+            const next = rawLines[i].trim();
+            if (!next) { i++; continue; }
+            if (dateRe.test(next.split('\t')[0])) break;
+            const amountMatch = next.match(/\$\s*(-?[\d.]+)/);
+            if (amountMatch) {
+              rawAmount = parseInt(amountMatch[1].replace(/\./g, ''), 10);
+              i++;
+              break;
+            }
+            descLines.push(next.replace(/\t/g, ' ').trim());
+            i++;
+          }
+          if (rawAmount !== null && rawAmount !== 0) items.push({
+            id: Date.now().toString() + Math.random(),
+            date: firstCol,
+            concept: descLines.join(' ').trim() || 'Sin descripción',
+            amount: rawAmount,
+            type: rawAmount < 0 ? 'Ingreso' : 'Individual',
+            category: 'Tarjeta Crédito',
+            myPart: rawAmount < 0 ? 0 : rawAmount,
+            isPaid: false, isExcluded: false
+          });
+        }
+      } else {
+        i++;
+      }
+    }
 
     if (items.length > 0) {
       const newBatch = { id: Date.now().toString(), date: new Date().toLocaleString(), items, title, comment };
