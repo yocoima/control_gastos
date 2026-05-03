@@ -370,7 +370,8 @@ export default function App() {
     ...exp,
     amount: exp.amount,
     myPart: exp.type === 'Compartido' ? exp.amount / 2 : exp.type === 'Ingreso' ? 0 : exp.amount,
-    isPaid: (exp.paidMonths || []).includes(monthKey)
+    isPaid: (exp.paidMonths || []).includes(monthKey),
+    karlaIsPaid: (exp.karlaPaidMonths || []).includes(monthKey)
   }));
 
   const activeInstallments = installmentPlans.map(plan => {
@@ -550,7 +551,7 @@ export default function App() {
   const copyDebtDetails = () => {
     const pending = movements.filter(m => (m.type==='Compartido'||m.type==='Deuda'||m.type==='Préstamo'||m.type==='Yo debo') && !m.isPaid);
     const pendingInst = activeInstallments.filter(inst => (inst.type==='Compartido'||inst.type==='Préstamo'||inst.type==='Yo debo') && !inst.isPaid);
-    const pendingFixed = activeFixedExpenses.filter(exp => (exp.type==='Compartido'||exp.type==='Préstamo'||exp.type==='Yo debo') && !exp.isPaid);
+    const pendingFixed = activeFixedExpenses.filter(exp => (exp.type==='Compartido'||exp.type==='Préstamo'||exp.type==='Yo debo') && !exp.karlaIsPaid);
     const movText = pending.map(m => {
       const part = m.type === 'Compartido' ? m.amount / 2 : (m.type === 'Yo debo' ? -m.amount : m.amount);
       return `• ${m.concept}: ${formatCLP(part)}`;
@@ -772,18 +773,21 @@ export default function App() {
   const allMovements = [...movements, ...tcBatches.flatMap(b => b.items.filter(i => !i.isExcluded)), ...activeInstallments, ...activeFixedExpenses];
 
   const totals = allMovements.reduce((acc, m) => {
-    if (m.isPaid) return acc;
-    if (m.type === 'Ingreso') acc.income += m.amount;
-    else if (m.type === 'Individual') acc.indiv += m.amount;
-    else if (m.type === 'Compartido' || m.type === 'Deuda' || m.type === 'Préstamo') {
-      acc.shared += m.amount;
-      acc.debt += (m.type === 'Compartido' ? m.amount / 2 : m.amount);
+    // For shared fixed expenses, Karla's debt clears separately from the user's "paid" mark
+    const karlaIsPaid = m.karlaIsPaid !== undefined ? m.karlaIsPaid : m.isPaid;
+    if (m.isPaid && karlaIsPaid) return acc;
+    if (!m.isPaid) {
+      if (m.type === 'Ingreso') acc.income += m.amount;
+      else if (m.type === 'Individual') acc.indiv += m.amount;
+      else if (m.type === 'Compartido' || m.type === 'Deuda' || m.type === 'Préstamo') acc.shared += m.amount;
+      else if (m.type === 'Yo debo') acc.indiv += m.amount;
+      else acc.indiv += m.amount;
     }
-    else if (m.type === 'Yo debo') {
-      acc.indiv += m.amount;
-      acc.debt -= m.amount;
-    } else {
-      acc.indiv += m.amount;
+    if (!karlaIsPaid) {
+      if (m.type === 'Compartido' || m.type === 'Deuda' || m.type === 'Préstamo')
+        acc.debt += (m.type === 'Compartido' ? m.amount / 2 : m.amount);
+      else if (m.type === 'Yo debo')
+        acc.debt -= m.amount;
     }
     return acc;
   }, { income: 0, indiv: 0, shared: 0, debt: 0 });
@@ -995,7 +999,7 @@ export default function App() {
                           </span>
                         </div>
                       ))}
-                      {activeFixedExpenses.filter(exp => (exp.type==='Compartido'||exp.type==='Préstamo'||exp.type==='Yo debo') && !exp.isPaid).map(exp => (
+                      {activeFixedExpenses.filter(exp => (exp.type==='Compartido'||exp.type==='Préstamo'||exp.type==='Yo debo') && !exp.karlaIsPaid).map(exp => (
                         <div key={'fix_debt_' + exp.id} className="flex justify-between items-center text-sm">
                           <span className="text-slate-500 font-medium truncate pr-4">
                             {exp.concept}
@@ -1295,12 +1299,16 @@ export default function App() {
               <button onClick={() => {
                 const newBals = {...balances, itau: balances.itau + totals.debt};
                 const updated = movements.map(m => (m.type==='Compartido'||m.type==='Deuda'||m.type==='Préstamo') ? {...m, isPaid: true} : m);
-                setBalances(newBals); setMovements(updated); saveToCloud(updated, newBals); setShowPaymentModal(false);
+                const updatedFixed = fixedExpenses.map(exp => exp.type === 'Compartido' ? { ...exp, karlaPaidMonths: [...(exp.karlaPaidMonths || []), monthKey] } : exp);
+                setBalances(newBals); setMovements(updated); setFixedExpenses(updatedFixed);
+                saveToCloud(updated, newBals); saveFixedExpenses(updatedFixed); setShowPaymentModal(false);
               }} className="p-6 bg-slate-50 border-2 rounded-3xl font-black text-lg hover:border-blue-500 transition-all text-center">Banco Itaú</button>
               <button onClick={() => {
                 const newBals = {...balances, scotia: balances.scotia + totals.debt};
                 const updated = movements.map(m => (m.type==='Compartido'||m.type==='Deuda'||m.type==='Préstamo') ? {...m, isPaid: true} : m);
-                setBalances(newBals); setMovements(updated); saveToCloud(updated, newBals); setShowPaymentModal(false);
+                const updatedFixed = fixedExpenses.map(exp => exp.type === 'Compartido' ? { ...exp, karlaPaidMonths: [...(exp.karlaPaidMonths || []), monthKey] } : exp);
+                setBalances(newBals); setMovements(updated); setFixedExpenses(updatedFixed);
+                saveToCloud(updated, newBals); saveFixedExpenses(updatedFixed); setShowPaymentModal(false);
               }} className="p-6 bg-slate-50 border-2 rounded-3xl font-black text-lg hover:border-red-500 transition-all text-center">Scotiabank</button>
               <button onClick={() => setShowPaymentModal(false)} className="py-4 text-slate-400 font-black uppercase text-xs text-center mt-2">Cerrar</button>
             </div>
