@@ -1481,9 +1481,9 @@ export default function App() {
 
       {evidenceViewer && (
         <div className="fixed inset-0 bg-black/90 z-50 flex items-center justify-center p-4" onClick={() => setEvidenceViewer(null)}>
-          <div className="relative max-w-2xl w-full" onClick={e => e.stopPropagation()}>
+          <div className="relative max-w-[95vw] max-h-[95vh] flex flex-col items-center" onClick={e => e.stopPropagation()}>
             <button onClick={() => setEvidenceViewer(null)} className="absolute -top-10 right-0 text-white/70 hover:text-white"><X size={24}/></button>
-            <img src={evidenceViewer.imageBase64} alt="evidencia" className="w-full rounded-2xl" />
+            <img src={evidenceViewer.imageBase64} alt="evidencia" className="max-w-full max-h-[88vh] object-contain rounded-2xl" />
             <p className="text-white/50 text-xs text-center mt-3">{evidenceViewer.uploadedAt}</p>
           </div>
         </div>
