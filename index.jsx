@@ -44,6 +44,12 @@ export default function App() {
   const [installmentPlans, setInstallmentPlans] = useState([]);
   const [showInstallmentModal, setShowInstallmentModal] = useState(false);
   const [showAllInstallments, setShowAllInstallments] = useState(false);
+  const [fixedExpenses, setFixedExpenses] = useState([]);
+  const [showFixedModal, setShowFixedModal] = useState(false);
+  const [evidence, setEvidence] = useState([]);
+  const [showEvidence, setShowEvidence] = useState(false);
+  const [evidenceViewer, setEvidenceViewer] = useState(null);
+  const evidenceInputRef = useRef(null);
   const DEFAULT_TYPES = ['Compartido', 'Individual', 'Yo debo', 'Préstamo', 'Ingreso'];
   const DEFAULT_CATEGORIES = ['Comida', 'Gastos fijos', 'Cuentas', 'Transporte', 'Diversión', 'Sueldo', 'Otros'];
   const [movTypes, setMovTypes] = useState(DEFAULT_TYPES);
@@ -161,6 +167,57 @@ export default function App() {
     saveCategories(updated);
   };
 
+  // --- GASTOS FIJOS ---
+  useEffect(() => {
+    if (!user) return;
+    const ref = doc(db, 'artifacts', APP_COLLECTION_ID, 'users', user.uid, 'config', 'fixed_expenses');
+    const unsub = onSnapshot(ref, snap => {
+      if (snap.exists()) setFixedExpenses(snap.data().expenses || []);
+    });
+    return () => unsub();
+  }, [user]);
+
+  const saveFixedExpenses = async (expenses) => {
+    if (!user) return;
+    await setDoc(doc(db, 'artifacts', APP_COLLECTION_ID, 'users', user.uid, 'config', 'fixed_expenses'), { expenses });
+  };
+
+  const handleAddFixed = (e) => {
+    e.preventDefault();
+    const f = new FormData(e.target);
+    const newExp = {
+      id: Date.now().toString(),
+      concept: f.get('concept'),
+      amount: parseRawNumber(f.get('amount')),
+      type: f.get('type'),
+      category: f.get('category'),
+      startMonth: f.get('startMonth'),
+      endMonth: f.get('endMonth') || null,
+      paidMonths: []
+    };
+    const updated = [...fixedExpenses, newExp];
+    setFixedExpenses(updated);
+    saveFixedExpenses(updated);
+    setShowFixedModal(false);
+    e.target.reset();
+  };
+
+  const deleteFixedExpense = (id) => {
+    const updated = fixedExpenses.filter(e => e.id !== id);
+    setFixedExpenses(updated);
+    saveFixedExpenses(updated);
+  };
+
+  const toggleFixedPaid = (id) => {
+    const updated = fixedExpenses.map(exp => {
+      if (exp.id !== id) return exp;
+      const paidMonths = exp.paidMonths || [];
+      return { ...exp, paidMonths: paidMonths.includes(monthKey) ? paidMonths.filter(m => m !== monthKey) : [...paidMonths, monthKey] };
+    });
+    setFixedExpenses(updated);
+    saveFixedExpenses(updated);
+  };
+
   // --- CUOTAS ---
   useEffect(() => {
     if (!user) return;
@@ -236,6 +293,51 @@ export default function App() {
     return { installmentNumber, isActive, isFinished, isPaid, myPart };
   };
 
+  const addEvidence = async (file) => {
+    if (!file) return;
+    const base64 = await new Promise((resolve, reject) => {
+      const img = new Image();
+      const url = URL.createObjectURL(file);
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const max = 900;
+        let { width, height } = img;
+        if (width > max || height > max) {
+          if (width > height) { height = (height / width) * max; width = max; }
+          else { width = (width / height) * max; height = max; }
+        }
+        canvas.width = width; canvas.height = height;
+        canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+        URL.revokeObjectURL(url);
+        resolve(canvas.toDataURL('image/jpeg', 0.7));
+      };
+      img.onerror = reject;
+      img.src = url;
+    });
+    const newItem = { id: Date.now().toString(), imageBase64: base64, uploadedAt: new Date().toLocaleString('es-CL') };
+    const updated = [...evidence, newItem];
+    setEvidence(updated);
+    saveToCloud(movements, balances, tcBatches, updated);
+    if (evidenceInputRef.current) evidenceInputRef.current.value = '';
+  };
+
+  const deleteEvidence = (id) => {
+    const updated = evidence.filter(e => e.id !== id);
+    setEvidence(updated);
+    saveToCloud(movements, balances, tcBatches, updated);
+  };
+
+  const activeFixedExpenses = fixedExpenses.filter(exp => {
+    if (exp.startMonth > monthKey) return false;
+    if (exp.endMonth && exp.endMonth < monthKey) return false;
+    return true;
+  }).map(exp => ({
+    ...exp,
+    amount: exp.amount,
+    myPart: exp.type === 'Compartido' ? exp.amount / 2 : exp.type === 'Ingreso' ? 0 : exp.amount,
+    isPaid: (exp.paidMonths || []).includes(monthKey)
+  }));
+
   const activeInstallments = installmentPlans.map(plan => {
     const status = getInstallmentStatus(plan);
     if (!status.isActive) return null;
@@ -253,23 +355,26 @@ export default function App() {
         setMovements(data.movements || []);
         setBalances(data.balances || { itau: 0, scotia: 0, edenred: 0, tc_deuda: 0 });
         setTcBatches(data.tcBatches || []);
+        setEvidence(data.evidence || []);
       } else {
         setMovements([]);
         setBalances({ itau: 0, scotia: 0, edenred: 0, tc_deuda: 0 });
         setTcBatches([]);
+        setEvidence([]);
       }
       setLoading(false);
     }, (err) => setLoading(false));
     return () => unsubscribe();
   }, [user, monthKey]);
 
-  const saveToCloud = async (newMovs, newBals, newBatches = tcBatches) => {
+  const saveToCloud = async (newMovs, newBals, newBatches = tcBatches, newEvidence = evidence) => {
     if (!user) return;
     try {
       await setDoc(doc(db, 'artifacts', APP_COLLECTION_ID, 'users', user.uid, 'monthly_records', monthKey), {
         movements: newMovs,
         balances: newBals,
         tcBatches: newBatches,
+        evidence: newEvidence,
         updatedAt: new Date().toISOString()
       });
     } catch (err) {
@@ -410,6 +515,7 @@ export default function App() {
   const copyDebtDetails = () => {
     const pending = movements.filter(m => (m.type==='Compartido'||m.type==='Deuda'||m.type==='Préstamo'||m.type==='Yo debo') && !m.isPaid);
     const pendingInst = activeInstallments.filter(inst => (inst.type==='Compartido'||inst.type==='Préstamo'||inst.type==='Yo debo') && !inst.isPaid);
+    const pendingFixed = activeFixedExpenses.filter(exp => (exp.type==='Compartido'||exp.type==='Préstamo'||exp.type==='Yo debo') && !exp.isPaid);
     const movText = pending.map(m => {
       const part = m.type === 'Compartido' ? m.amount / 2 : (m.type === 'Yo debo' ? -m.amount : m.amount);
       return `• ${m.concept}: ${formatCLP(part)}`;
@@ -418,10 +524,15 @@ export default function App() {
       const part = inst.type === 'Compartido' ? inst.monthlyAmount / 2 : (inst.type === 'Yo debo' ? -inst.monthlyAmount : inst.monthlyAmount);
       return `• ${inst.concept} (cuota ${inst.installmentNumber}/${inst.installments}): ${formatCLP(part)}`;
     });
-    const text = [...movText, ...instText].join('\n');
+    const fixedText = pendingFixed.map(exp => {
+      const part = exp.type === 'Compartido' ? exp.amount / 2 : (exp.type === 'Yo debo' ? -exp.amount : exp.amount);
+      return `• ${exp.concept} (fijo): ${formatCLP(part)}`;
+    });
+    const text = [...movText, ...instText, ...fixedText].join('\n');
     const movTotal = pending.reduce((acc, m) => acc + (m.type === 'Compartido' ? m.amount / 2 : (m.type === 'Yo debo' ? -m.amount : m.amount)), 0);
     const instTotal2 = pendingInst.reduce((acc, inst) => acc + (inst.type === 'Compartido' ? inst.monthlyAmount / 2 : (inst.type === 'Yo debo' ? -inst.monthlyAmount : inst.monthlyAmount)), 0);
-    const total = movTotal + instTotal2;
+    const fixedTotal = pendingFixed.reduce((acc, exp) => acc + (exp.type === 'Compartido' ? exp.amount / 2 : (exp.type === 'Yo debo' ? -exp.amount : exp.amount)), 0);
+    const total = movTotal + instTotal2 + fixedTotal;
     const finalMsg = `📝 *Detalle Deuda - ${currentDate.toLocaleString('es-CL', { month: 'long' })}*\n\n${text}\n\n*Total a pagar: ${formatCLP(total)}*`;
     
     navigator.clipboard.writeText(finalMsg);
@@ -623,7 +734,7 @@ export default function App() {
     if(csvInputRef.current) csvInputRef.current.value = ''; // Resetear el input
   };
 
-  const allMovements = [...movements, ...tcBatches.flatMap(b => b.items.filter(i => !i.isExcluded)), ...activeInstallments];
+  const allMovements = [...movements, ...tcBatches.flatMap(b => b.items.filter(i => !i.isExcluded)), ...activeInstallments, ...activeFixedExpenses];
 
   const totals = allMovements.reduce((acc, m) => {
     if (m.isPaid) return acc;
@@ -849,6 +960,18 @@ export default function App() {
                           </span>
                         </div>
                       ))}
+                      {activeFixedExpenses.filter(exp => (exp.type==='Compartido'||exp.type==='Préstamo'||exp.type==='Yo debo') && !exp.isPaid).map(exp => (
+                        <div key={'fix_debt_' + exp.id} className="flex justify-between items-center text-sm">
+                          <span className="text-slate-500 font-medium truncate pr-4">
+                            {exp.concept}
+                            <span className="text-[8px] bg-green-100 text-green-700 px-1 rounded ml-1">Fijo</span>
+                            {exp.type === 'Yo debo' && <span className="text-[8px] bg-red-100 text-red-700 px-1 rounded ml-1">Mía</span>}
+                          </span>
+                          <span className={`font-bold whitespace-nowrap ${exp.type === 'Yo debo' ? 'text-red-600' : ''}`}>
+                            {formatCLP(exp.type==='Compartido' ? exp.amount/2 : (exp.type==='Yo debo' ? -exp.amount : exp.amount))}
+                          </span>
+                        </div>
+                      ))}
                     </div>
                     <button onClick={() => setShowPaymentModal(true)} className="w-full bg-green-500 text-white font-black py-4 rounded-2xl flex items-center justify-center gap-2 hover:bg-green-600 shadow-lg shadow-green-100 transition-all">
                       <CheckCircle2 size={20}/> REGISTRAR PAGO
@@ -944,9 +1067,10 @@ export default function App() {
             <div className="bg-white rounded-[2.5rem] border border-slate-200 shadow-sm overflow-hidden">
               <div className="p-6 border-b flex justify-between items-center bg-slate-50/50 font-black">
                 <span>Historial del Mes</span>
-                <button onClick={() => setShowInstallmentModal(true)} className="flex items-center gap-1.5 px-3 py-2 bg-blue-600 text-white rounded-xl text-[10px] font-black hover:bg-blue-700 transition-all shadow-sm">
-                  <Plus size={14}/> CUOTA
-                </button>
+                <div className="flex gap-2">
+                  <button onClick={() => setShowFixedModal(true)} className="flex items-center gap-1.5 px-3 py-2 bg-green-600 text-white rounded-xl text-[10px] font-black hover:bg-green-700 transition-all shadow-sm"><Plus size={14}/> FIJO</button>
+                  <button onClick={() => setShowInstallmentModal(true)} className="flex items-center gap-1.5 px-3 py-2 bg-blue-600 text-white rounded-xl text-[10px] font-black hover:bg-blue-700 transition-all shadow-sm"><Plus size={14}/> CUOTA</button>
+                </div>
               </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
@@ -960,6 +1084,31 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-50">
+                    {/* Gastos fijos — siempre al inicio */}
+                    {[...activeFixedExpenses].sort((a, b) => a.isPaid - b.isPaid).map(exp => (
+                      <tr key={'fix_' + exp.id} className={`group border-l-4 border-l-green-400 ${exp.isPaid ? 'opacity-30' : 'bg-green-50/20 hover:bg-green-50/40'}`}>
+                        <td className="px-6 py-4">
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <p className="font-bold text-slate-800">{exp.concept}</p>
+                              <span className="text-[8px] font-black bg-green-100 text-green-700 px-1.5 py-0.5 rounded-md">Fijo</span>
+                            </div>
+                            <p className="text-[10px] text-slate-400 uppercase font-bold">{exp.category}</p>
+                          </div>
+                        </td>
+                        <td className="px-6 py-4">
+                          <span className={`text-[9px] font-black px-2 py-1 rounded-lg uppercase ${exp.type === 'Yo debo' ? 'bg-red-100 text-red-700' : exp.type === 'Individual' ? 'bg-purple-100 text-purple-700' : exp.type === 'Ingreso' ? 'bg-green-100 text-green-700' : 'bg-blue-100 text-blue-700'}`}>{exp.type}</span>
+                        </td>
+                        <td className="px-6 py-4 text-right font-medium">{formatCLP(exp.amount)}</td>
+                        <td className="px-6 py-4 text-right font-black text-blue-600">{formatCLP(exp.myPart)}</td>
+                        <td className="px-6 py-4 text-right">
+                          <div className="flex justify-end gap-1">
+                            <button onClick={() => toggleFixedPaid(exp.id)} title={exp.isPaid ? 'Desmarcar' : 'Marcar como pagado'} className={`p-2 transition-colors ${exp.isPaid ? 'text-green-500' : 'text-slate-300 hover:text-green-500'}`}><CheckCircle2 size={18}/></button>
+                            <button onClick={() => deleteFixedExpense(exp.id)} className="p-2 text-slate-300 hover:text-red-500 transition-colors"><Trash2 size={18}/></button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
                     {/* Cuotas activas — siempre al inicio */}
                     {[...activeInstallments].sort((a, b) => a.isPaid - b.isPaid).map(inst => (
                       <tr key={'inst_' + inst.id} className={`group border-l-4 border-l-blue-400 ${inst.isPaid ? 'opacity-30' : 'bg-blue-50/20 hover:bg-blue-50/40'}`}>
@@ -1033,6 +1182,35 @@ export default function App() {
               </div>
             </div>
           </div>
+        </div>
+
+        {/* Evidencias de Pago */}
+        <div className="mt-6 bg-white rounded-[2.5rem] border border-slate-200 shadow-sm overflow-hidden">
+          <button onClick={() => setShowEvidence(!showEvidence)} className="w-full p-5 flex justify-between items-center hover:bg-slate-50 transition-all">
+            <div className="flex items-center gap-3">
+              <span className="font-black text-slate-700">Evidencias de Pago</span>
+              {evidence.length > 0 && <span className="text-[9px] font-black bg-slate-100 text-slate-500 px-2 py-1 rounded-lg">{evidence.length} imagen{evidence.length !== 1 ? 's' : ''}</span>}
+            </div>
+            {showEvidence ? <ChevronUp size={18} className="text-slate-400"/> : <ChevronDown size={18} className="text-slate-400"/>}
+          </button>
+          {showEvidence && (
+            <div className="px-6 pb-6">
+              <input type="file" ref={evidenceInputRef} accept="image/*" className="hidden" onChange={e => addEvidence(e.target.files[0])} />
+              <button onClick={() => evidenceInputRef.current?.click()} className="mb-4 flex items-center gap-2 px-4 py-2 bg-slate-900 text-white rounded-2xl text-xs font-black hover:bg-slate-700 transition-all">
+                <Camera size={14}/> SUBIR PANTALLAZO
+              </button>
+              {evidence.length === 0 && <p className="text-xs text-slate-400 text-center py-6">Sin evidencias subidas este mes</p>}
+              <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-3">
+                {evidence.map(ev => (
+                  <div key={ev.id} className="relative group">
+                    <img src={ev.imageBase64} alt="evidencia" onClick={() => setEvidenceViewer(ev)} className="w-full aspect-square object-cover rounded-2xl cursor-pointer hover:opacity-90 transition-opacity border border-slate-100" />
+                    <button onClick={() => deleteEvidence(ev.id)} className="absolute top-1 right-1 p-1 bg-red-500 text-white rounded-lg opacity-0 group-hover:opacity-100 transition-opacity"><X size={10}/></button>
+                    <p className="text-[8px] text-slate-400 text-center mt-1 truncate">{ev.uploadedAt}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </main>
 
@@ -1190,6 +1368,56 @@ export default function App() {
                 <button type="submit" className="flex-1 py-4 bg-blue-600 text-white font-black rounded-2xl shadow-xl shadow-blue-100">GUARDAR</button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {showFixedModal && (
+        <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-md z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-[3rem] p-8 w-full max-w-md">
+            <div className="flex justify-between items-center mb-6">
+              <h3 className="font-black text-2xl">Nuevo Gasto Fijo</h3>
+              <button onClick={() => setShowFixedModal(false)} className="p-2 text-slate-400 hover:bg-slate-100 rounded-xl"><X size={20}/></button>
+            </div>
+            <form onSubmit={handleAddFixed} className="space-y-4">
+              <input name="concept" placeholder="Nombre (ej. Dividendo, Entel, Gas)" required className="w-full bg-slate-50 border-2 border-transparent rounded-2xl p-4 text-sm font-medium focus:bg-white focus:border-green-500 outline-none" />
+              <div>
+                <label className="text-[9px] font-black text-slate-400 uppercase block mb-1 ml-1">Monto mensual</label>
+                <input name="amount" placeholder="$ 0" onChange={e => e.target.value = formatInputNumber(e.target.value)} required className="w-full bg-slate-50 border-2 border-transparent rounded-2xl p-4 text-sm font-black focus:bg-white focus:border-green-500 outline-none" />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[9px] font-black text-slate-400 uppercase block mb-1 ml-1">Mes de inicio</label>
+                  <input name="startMonth" type="month" defaultValue={monthKey} required className="w-full bg-slate-50 border-2 border-transparent rounded-2xl p-4 text-sm font-bold focus:bg-white focus:border-green-500 outline-none" />
+                </div>
+                <div>
+                  <label className="text-[9px] font-black text-slate-400 uppercase block mb-1 ml-1">Mes de término (opcional)</label>
+                  <input name="endMonth" type="month" className="w-full bg-slate-50 border-2 border-transparent rounded-2xl p-4 text-sm font-bold focus:bg-white focus:border-green-500 outline-none" />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <select name="type" className="w-full bg-slate-50 border-2 border-transparent rounded-2xl px-3 py-4 text-sm font-bold outline-none">
+                  {movTypes.map(t => <option key={t} value={t}>{t}</option>)}
+                </select>
+                <select name="category" className="w-full bg-slate-50 border-2 border-transparent rounded-2xl px-3 py-4 text-sm font-medium outline-none">
+                  {movCategories.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+              </div>
+              <div className="flex gap-3 pt-2">
+                <button type="button" onClick={() => setShowFixedModal(false)} className="flex-1 py-4 bg-slate-100 text-slate-500 font-black rounded-2xl">CANCELAR</button>
+                <button type="submit" className="flex-1 py-4 bg-green-600 text-white font-black rounded-2xl shadow-xl shadow-green-100">GUARDAR</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {evidenceViewer && (
+        <div className="fixed inset-0 bg-black/90 z-50 flex items-center justify-center p-4" onClick={() => setEvidenceViewer(null)}>
+          <div className="relative max-w-2xl w-full" onClick={e => e.stopPropagation()}>
+            <button onClick={() => setEvidenceViewer(null)} className="absolute -top-10 right-0 text-white/70 hover:text-white"><X size={24}/></button>
+            <img src={evidenceViewer.imageBase64} alt="evidencia" className="w-full rounded-2xl" />
+            <p className="text-white/50 text-xs text-center mt-3">{evidenceViewer.uploadedAt}</p>
           </div>
         </div>
       )}
