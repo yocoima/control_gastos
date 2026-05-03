@@ -764,11 +764,13 @@ export default function App() {
     const karlaIsPaid = m.karlaIsPaid !== undefined ? m.karlaIsPaid : m.isPaid;
     if (m.isPaid && karlaIsPaid) return acc;
     if (!m.isPaid) {
-      if (m.type === 'Ingreso') acc.income += m.amount;
-      else if (m.type === 'Individual') acc.indiv += m.amount;
-      else if (m.type === 'Compartido' || m.type === 'Deuda' || m.type === 'Préstamo') acc.shared += m.amount;
-      else if (m.type === 'Yo debo') acc.indiv += m.amount;
-      else acc.indiv += m.amount;
+      if (m.type === 'Ingreso') {
+        acc.income += m.amount;
+      } else {
+        const myPart = m.myPart !== undefined ? m.myPart : (m.type === 'Compartido' ? m.amount / 2 : m.amount);
+        acc.indiv += myPart;
+        if (m.type === 'Compartido' || m.type === 'Deuda' || m.type === 'Préstamo') acc.shared += m.amount;
+      }
     }
     if (!karlaIsPaid) {
       if (m.type === 'Compartido' || m.type === 'Deuda' || m.type === 'Préstamo')
