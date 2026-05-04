@@ -848,7 +848,13 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
     if(csvInputRef.current) csvInputRef.current.value = ''; // Resetear el input
   };
 
-  const allMovements = [...movements, ...tcBatches.flatMap(b => b.items.filter(i => !i.isExcluded)), ...activeInstallments, ...activeFixedExpenses];
+  const withSource = (items, source) => items.map(item => ({ ...item, source }));
+  const allMovements = [
+    ...withSource(movements, 'Movimiento'),
+    ...tcBatches.flatMap(b => withSource(b.items.filter(i => !i.isExcluded), b.title ? `TC: ${b.title}` : 'TC')),
+    ...withSource(activeInstallments, 'Cuota'),
+    ...withSource(activeFixedExpenses, 'Fijo')
+  ];
   const getAmount = (m) => parseRawNumber(m.amount);
   const getMyPart = (m) => {
     const amount = getAmount(m);
@@ -876,6 +882,23 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
     }
     return acc;
   }, { income: 0, indiv: 0, shared: 0, debt: 0 });
+
+  const totalsDetail = allMovements.map((m, index) => {
+    const amount = getAmount(m);
+    const myPart = getMyPart(m);
+    return {
+      key: `${m.source || 'item'}-${m.id || index}-${index}`,
+      source: m.source || 'Movimiento',
+      concept: m.concept || 'Sin detalle',
+      type: m.type || 'Sin tipo',
+      amount,
+      myPart,
+      incomeValue: isIncomeType(m.type) ? amount : 0,
+      personalValue: isIncomeType(m.type) ? 0 : myPart
+    };
+  });
+  const incomeDetail = totalsDetail.filter(item => item.incomeValue !== 0);
+  const personalDetail = totalsDetail.filter(item => item.personalValue !== 0);
 
   const CHART_COLORS = ['#3b82f6','#8b5cf6','#f97316','#10b981','#ec4899','#f59e0b','#06b6d4','#6366f1','#14b8a6','#f43f5e'];
   const TYPE_COLORS = { 'Compartido': '#3b82f6', 'Individual': '#8b5cf6', 'Yo debo': '#ef4444', 'Préstamo': '#f59e0b', 'Ingreso': '#10b981' };
@@ -1039,6 +1062,53 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
             <p className="text-2xl font-black">{formatCLP(totals.debt)}</p>
           </div>
         </div>
+
+        <details open className="bg-white rounded-[2rem] border border-slate-200 shadow-sm mb-8 overflow-hidden">
+          <summary className="cursor-pointer select-none px-5 py-4 text-[10px] font-black uppercase tracking-widest text-slate-500 bg-slate-50/70">
+            Detalle cálculo del resumen
+          </summary>
+          <div className="grid grid-cols-1 lg:grid-cols-2 divide-y lg:divide-y-0 lg:divide-x divide-slate-100">
+            <div className="p-5">
+              <div className="flex justify-between items-baseline mb-3">
+                <h3 className="text-xs font-black uppercase text-green-700">Ingresos detectados</h3>
+                <span className="font-black text-green-700">{formatCLP(totals.income)}</span>
+              </div>
+              <div className="max-h-64 overflow-y-auto divide-y divide-slate-50">
+                {incomeDetail.length === 0 ? (
+                  <p className="text-sm text-slate-400 py-6 text-center">Sin ingresos detectados en este periodo</p>
+                ) : incomeDetail.map(item => (
+                  <div key={item.key} className="py-3 flex justify-between gap-4 text-sm">
+                    <div className="min-w-0">
+                      <p className="font-bold text-slate-800 truncate">{item.concept}</p>
+                      <p className="text-[9px] font-black uppercase text-slate-400">{item.source} · {item.type}</p>
+                    </div>
+                    <span className="font-black text-green-700 whitespace-nowrap">{formatCLP(item.incomeValue)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="p-5">
+              <div className="flex justify-between items-baseline mb-3">
+                <h3 className="text-xs font-black uppercase text-blue-500">Personal detectado</h3>
+                <span className="font-black text-slate-700">{formatCLP(totals.indiv)}</span>
+              </div>
+              <div className="max-h-64 overflow-y-auto divide-y divide-slate-50">
+                {personalDetail.length === 0 ? (
+                  <p className="text-sm text-slate-400 py-6 text-center">Sin gastos personales detectados en este periodo</p>
+                ) : personalDetail.map(item => (
+                  <div key={item.key} className="py-3 flex justify-between gap-4 text-sm">
+                    <div className="min-w-0">
+                      <p className="font-bold text-slate-800 truncate">{item.concept}</p>
+                      <p className="text-[9px] font-black uppercase text-slate-400">{item.source} · {item.type} · Total {formatCLP(item.amount)}</p>
+                    </div>
+                    <span className="font-black text-slate-700 whitespace-nowrap">{formatCLP(item.personalValue)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </details>
 
         {/* Tabs */}
         <div className="flex gap-2 mb-6 bg-slate-100 p-1 rounded-2xl w-fit">
