@@ -40,6 +40,7 @@ export default function App() {
   const [copied, setCopied] = useState(false);
   const [expandedBatches, setExpandedBatches] = useState([]);
   const [isDebtCollapsed, setIsDebtCollapsed] = useState(true);
+  const [isHistoryCollapsed, setIsHistoryCollapsed] = useState(false);
   const [editingBatchId, setEditingBatchId] = useState(null);
   const [installmentPlans, setInstallmentPlans] = useState([]);
   const [showInstallmentModal, setShowInstallmentModal] = useState(false);
@@ -904,7 +905,8 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
   const CHART_COLORS = ['#3b82f6','#8b5cf6','#f97316','#10b981','#ec4899','#f59e0b','#06b6d4','#6366f1','#14b8a6','#f43f5e'];
   const TYPE_COLORS = { 'Compartido': '#3b82f6', 'Individual': '#8b5cf6', 'Yo debo': '#ef4444', 'Préstamo': '#f59e0b', 'Ingreso': '#10b981' };
 
-  const dashMovements = movements.filter(m => !m.isPaid && !isIncomeType(m.type));
+  const historyItemCount = movements.length + activeInstallments.length + activeFixedExpenses.length;
+  const dashMovements = allMovements.filter(m => !isIncomeType(m.type) && getMyPart(m) > 0);
 
   const dashByCategory = [...movCategories, ...dashMovements.map(m => m.category).filter(c => c && !movCategories.includes(c))]
     .reduce((acc, cat) => {
@@ -1489,13 +1491,21 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
           <div className="lg:col-span-2">
             <div className="bg-white rounded-[2.5rem] border border-slate-200 shadow-sm overflow-hidden">
               <div className="p-6 border-b flex justify-between items-center bg-slate-50/50 font-black">
-                <span>Historial del Mes</span>
+                <button
+                  onClick={() => setIsHistoryCollapsed(!isHistoryCollapsed)}
+                  className="flex items-center gap-2 text-left text-slate-800 hover:text-blue-600 transition-colors"
+                  title={isHistoryCollapsed ? 'Mostrar historial' : 'Ocultar historial'}
+                >
+                  {isHistoryCollapsed ? <ChevronDown size={18}/> : <ChevronUp size={18}/>}
+                  <span>Historial del Mes</span>
+                  <span className="text-[9px] font-black bg-slate-100 text-slate-400 px-2 py-1 rounded-lg">{historyItemCount}</span>
+                </button>
                 <div className="flex gap-2">
                   <button onClick={() => setShowFixedModal(true)} className="flex items-center gap-1.5 px-3 py-2 bg-green-600 text-white rounded-xl text-[10px] font-black hover:bg-green-700 transition-all shadow-sm"><Plus size={14}/> FIJO</button>
                   <button onClick={() => setShowInstallmentModal(true)} className="flex items-center gap-1.5 px-3 py-2 bg-blue-600 text-white rounded-xl text-[10px] font-black hover:bg-blue-700 transition-all shadow-sm"><Plus size={14}/> CUOTA</button>
                 </div>
               </div>
-              <div className="overflow-x-auto">
+              {!isHistoryCollapsed && <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead className="bg-white text-[10px] font-black text-slate-400 uppercase tracking-widest border-b">
                     <tr>                      
@@ -1634,7 +1644,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
                     ))}
                   </tbody>
                 </table>
-              </div>
+              </div>}
             </div>
           </div>
         </div>
