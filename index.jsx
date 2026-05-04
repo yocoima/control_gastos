@@ -787,21 +787,22 @@ export default function App() {
 
   const getMyPart = (m) => m.myPart !== undefined ? m.myPart : (m.type === 'Compartido' ? m.amount / 2 : m.amount);
 
-  const dashByCategory = [...movCategories, ...allMovements.map(m => m.category).filter(c => c && !movCategories.includes(c))]
+  const dashMovements = movements.filter(m => !m.isPaid && m.type !== 'Ingreso');
+
+  const dashByCategory = [...movCategories, ...dashMovements.map(m => m.category).filter(c => c && !movCategories.includes(c))]
     .reduce((acc, cat) => {
-      const total = allMovements.filter(m => !m.isPaid && m.type !== 'Ingreso' && m.category === cat).reduce((s, m) => s + getMyPart(m), 0);
+      const total = dashMovements.filter(m => m.category === cat).reduce((s, m) => s + getMyPart(m), 0);
       if (total > 0) acc.push({ cat, total });
       return acc;
     }, []).sort((a, b) => b.total - a.total);
 
   const dashByType = movTypes.filter(t => t !== 'Ingreso').reduce((acc, type) => {
-    const total = allMovements.filter(m => !m.isPaid && m.type === type).reduce((s, m) => s + getMyPart(m), 0);
+    const total = dashMovements.filter(m => m.type === type).reduce((s, m) => s + getMyPart(m), 0);
     if (total > 0) acc.push({ type, total });
     return acc;
   }, []).sort((a, b) => b.total - a.total);
 
-  const dashTop5 = allMovements
-    .filter(m => !m.isPaid && m.type !== 'Ingreso')
+  const dashTop5 = dashMovements
     .map(m => ({ concept: m.concept, amount: getMyPart(m), type: m.type, category: m.category }))
     .sort((a, b) => b.amount - a.amount)
     .slice(0, 5);
