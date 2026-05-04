@@ -82,8 +82,19 @@ export default function App() {
     return clean ? new Intl.NumberFormat('es-CL').format(parseInt(clean, 10)) : "";
   };
   const parseRawNumber = (val) => {
-    if (typeof val === 'number') return val;
-    return parseInt(val.toString().replace(/\./g, ""), 10) || 0;
+    if (typeof val === 'number') return Number.isFinite(val) ? val : 0;
+    if (val === null || val === undefined) return 0;
+    const raw = val.toString().trim();
+    if (!raw) return 0;
+    const cleaned = raw.replace(/[^\d,.-]/g, "");
+    const sign = cleaned.includes("-") ? -1 : 1;
+    const unsigned = cleaned.replace(/-/g, "");
+    const dotCount = (unsigned.match(/\./g) || []).length;
+    const commaCount = (unsigned.match(/,/g) || []).length;
+    const hasDecimalDot = dotCount === 1 && commaCount === 0 && /\.\d{1,2}$/.test(unsigned);
+    const normalized = hasDecimalDot ? unsigned : unsigned.replace(/[.,]/g, "");
+    const parsed = Number(normalized);
+    return Number.isFinite(parsed) ? parsed * sign : 0;
   };
 
   // --- AUTENTICACIÓN ---
@@ -822,12 +833,12 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
 
   const allMovements = [...movements, ...tcBatches.flatMap(b => b.items.filter(i => !i.isExcluded)), ...activeInstallments, ...activeFixedExpenses];
   const isReceivableType = (type) => type === 'Deuda' || type === 'Préstamo';
-  const getAmount = (m) => Number(m.amount) || 0;
+  const getAmount = (m) => parseRawNumber(m.amount);
   const getMyPart = (m) => {
     const amount = getAmount(m);
     if (m.type === 'Ingreso' || isReceivableType(m.type)) return 0;
-    if (m.type === 'Compartido') return m.myPart !== undefined ? m.myPart : amount / 2;
-    return m.myPart !== undefined ? m.myPart : amount;
+    if (m.type === 'Compartido') return m.myPart !== undefined ? parseRawNumber(m.myPart) : amount / 2;
+    return m.myPart !== undefined ? parseRawNumber(m.myPart) : amount;
   };
 
   const totals = allMovements.reduce((acc, m) => {
