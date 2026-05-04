@@ -69,6 +69,7 @@ export default function App() {
   const monthKey = `${currentDate.getFullYear()}-${(currentDate.getMonth() + 1).toString().padStart(2, '0')}`;
 
   const [sortConfig, setSortConfig] = useState({ key: 'id', direction: 'desc' });
+  const [activeTab, setActiveTab] = useState('movimientos');
 
   // --- FORMATEO ---
   const formatCLP = (val) => new Intl.NumberFormat('es-CL', { style: 'currency', currency: 'CLP', minimumFractionDigits: 0 }).format(val || 0);
@@ -781,6 +782,30 @@ export default function App() {
     return acc;
   }, { income: 0, indiv: 0, shared: 0, debt: 0 });
 
+  const CHART_COLORS = ['#3b82f6','#8b5cf6','#f97316','#10b981','#ec4899','#f59e0b','#06b6d4','#6366f1','#14b8a6','#f43f5e'];
+  const TYPE_COLORS = { 'Compartido': '#3b82f6', 'Individual': '#8b5cf6', 'Yo debo': '#ef4444', 'Préstamo': '#f59e0b', 'Ingreso': '#10b981' };
+
+  const getMyPart = (m) => m.myPart !== undefined ? m.myPart : (m.type === 'Compartido' ? m.amount / 2 : m.amount);
+
+  const dashByCategory = [...movCategories, ...allMovements.map(m => m.category).filter(c => c && !movCategories.includes(c))]
+    .reduce((acc, cat) => {
+      const total = allMovements.filter(m => !m.isPaid && m.type !== 'Ingreso' && m.category === cat).reduce((s, m) => s + getMyPart(m), 0);
+      if (total > 0) acc.push({ cat, total });
+      return acc;
+    }, []).sort((a, b) => b.total - a.total);
+
+  const dashByType = movTypes.filter(t => t !== 'Ingreso').reduce((acc, type) => {
+    const total = allMovements.filter(m => !m.isPaid && m.type === type).reduce((s, m) => s + getMyPart(m), 0);
+    if (total > 0) acc.push({ type, total });
+    return acc;
+  }, []).sort((a, b) => b.total - a.total);
+
+  const dashTop5 = allMovements
+    .filter(m => !m.isPaid && m.type !== 'Ingreso')
+    .map(m => ({ concept: m.concept, amount: getMyPart(m), type: m.type, category: m.category }))
+    .sort((a, b) => b.amount - a.amount)
+    .slice(0, 5);
+
   const requestSort = (key) => {
     let direction = 'asc';
     if (sortConfig.key === key && sortConfig.direction === 'asc') {
@@ -921,7 +946,124 @@ export default function App() {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+        {/* Tabs */}
+        <div className="flex gap-2 mb-6 bg-slate-100 p-1 rounded-2xl w-fit">
+          <button onClick={() => setActiveTab('movimientos')} className={`px-5 py-2 rounded-xl text-xs font-black uppercase transition-all ${activeTab === 'movimientos' ? 'bg-white shadow text-slate-800' : 'text-slate-400 hover:text-slate-600'}`}>Movimientos</button>
+          <button onClick={() => setActiveTab('dashboard')} className={`px-5 py-2 rounded-xl text-xs font-black uppercase transition-all ${activeTab === 'dashboard' ? 'bg-white shadow text-slate-800' : 'text-slate-400 hover:text-slate-600'}`}>Dashboard</button>
+        </div>
+
+        {/* Dashboard */}
+        {activeTab === 'dashboard' && (
+          <div className="space-y-6">
+            {/* Por categoría y por tipo */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {/* Por categoría */}
+              <div className="bg-white rounded-[2.5rem] border border-slate-200 shadow-sm p-6">
+                <h3 className="font-black text-slate-800 mb-1">Por Categoría</h3>
+                <p className="text-[10px] text-slate-400 uppercase font-black mb-5">Mi parte por categoría</p>
+                {dashByCategory.length === 0 ? (
+                  <p className="text-slate-400 text-sm text-center py-8">Sin datos este mes</p>
+                ) : (
+                  <div className="space-y-4">
+                    {dashByCategory.map(({ cat, total }, i) => {
+                      const pct = (total / dashByCategory[0].total) * 100;
+                      return (
+                        <div key={cat}>
+                          <div className="flex justify-between items-baseline mb-1.5">
+                            <span className="text-sm font-bold text-slate-700">{cat}</span>
+                            <span className="text-sm font-black text-slate-800">{formatCLP(total)}</span>
+                          </div>
+                          <div className="h-2.5 bg-slate-100 rounded-full overflow-hidden">
+                            <div className="h-full rounded-full transition-all duration-500" style={{ width: `${pct}%`, backgroundColor: CHART_COLORS[i % CHART_COLORS.length] }} />
+                          </div>
+                          <p className="text-[9px] text-slate-400 mt-0.5 text-right font-medium">{pct.toFixed(0)}% del mayor</p>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Por tipo */}
+              <div className="bg-white rounded-[2.5rem] border border-slate-200 shadow-sm p-6">
+                <h3 className="font-black text-slate-800 mb-1">Por Tipo</h3>
+                <p className="text-[10px] text-slate-400 uppercase font-black mb-5">Mi parte por tipo de movimiento</p>
+                {dashByType.length === 0 ? (
+                  <p className="text-slate-400 text-sm text-center py-8">Sin datos este mes</p>
+                ) : (
+                  <div className="space-y-4">
+                    {dashByType.map(({ type, total }) => {
+                      const pct = (total / dashByType[0].total) * 100;
+                      const color = TYPE_COLORS[type] || '#64748b';
+                      return (
+                        <div key={type}>
+                          <div className="flex justify-between items-baseline mb-1.5">
+                            <span className="text-sm font-bold text-slate-700">{type}</span>
+                            <span className="text-sm font-black text-slate-800">{formatCLP(total)}</span>
+                          </div>
+                          <div className="h-2.5 bg-slate-100 rounded-full overflow-hidden">
+                            <div className="h-full rounded-full transition-all duration-500" style={{ width: `${pct}%`, backgroundColor: color }} />
+                          </div>
+                          <p className="text-[9px] text-slate-400 mt-0.5 text-right font-medium">{pct.toFixed(0)}% del mayor</p>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Top 5 gastos */}
+            <div className="bg-white rounded-[2.5rem] border border-slate-200 shadow-sm p-6">
+              <h3 className="font-black text-slate-800 mb-1">Top 5 Gastos</h3>
+              <p className="text-[10px] text-slate-400 uppercase font-black mb-5">Los mayores gastos del mes (mi parte)</p>
+              {dashTop5.length === 0 ? (
+                <p className="text-slate-400 text-sm text-center py-8">Sin datos este mes</p>
+              ) : (
+                <div className="divide-y divide-slate-50">
+                  {dashTop5.map(({ concept, amount, type, category }, i) => {
+                    const color = TYPE_COLORS[type] || '#64748b';
+                    const maxAmount = dashTop5[0].amount;
+                    return (
+                      <div key={i} className="py-3 flex items-center gap-4">
+                        <span className="text-2xl font-black text-slate-100 w-8 shrink-0 text-center">#{i + 1}</span>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex justify-between items-baseline mb-1">
+                            <span className="font-bold text-slate-800 truncate pr-3">{concept}</span>
+                            <span className="font-black text-slate-800 whitespace-nowrap">{formatCLP(amount)}</span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <div className="flex-1 h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                              <div className="h-full rounded-full" style={{ width: `${(amount / maxAmount) * 100}%`, backgroundColor: color }} />
+                            </div>
+                            <span className="text-[9px] font-black px-2 py-0.5 rounded-md uppercase" style={{ backgroundColor: color + '20', color }}>{type}</span>
+                            <span className="text-[9px] text-slate-400 font-medium">{category}</span>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Resumen porcentual */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              {dashByCategory.slice(0, 4).map(({ cat, total }, i) => {
+                const pct = totals.indiv > 0 ? ((total / totals.indiv) * 100).toFixed(1) : '0';
+                return (
+                  <div key={cat} className="bg-white rounded-[2rem] border border-slate-200 p-5 text-center">
+                    <p className="text-[9px] font-black uppercase text-slate-400 mb-2">{cat}</p>
+                    <p className="text-3xl font-black" style={{ color: CHART_COLORS[i % CHART_COLORS.length] }}>{pct}%</p>
+                    <p className="text-[10px] text-slate-500 font-medium mt-1">{formatCLP(total)}</p>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'movimientos' && <><div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           <div className="space-y-6">
             {/* Nuevo Gasto */}
             <div className="bg-white p-6 rounded-[2.5rem] border border-slate-200 shadow-sm">
@@ -1277,6 +1419,7 @@ export default function App() {
             </div>
           )}
         </div>
+        </>}
       </main>
 
       {/* Modales */}
