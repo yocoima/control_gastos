@@ -821,33 +821,37 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
   };
 
   const allMovements = [...movements, ...tcBatches.flatMap(b => b.items.filter(i => !i.isExcluded)), ...activeInstallments, ...activeFixedExpenses];
+  const isReceivableType = (type) => type === 'Deuda' || type === 'Préstamo';
+  const getAmount = (m) => Number(m.amount) || 0;
+  const getMyPart = (m) => {
+    const amount = getAmount(m);
+    if (m.type === 'Ingreso' || isReceivableType(m.type)) return 0;
+    if (m.type === 'Compartido') return m.myPart !== undefined ? m.myPart : amount / 2;
+    return m.myPart !== undefined ? m.myPart : amount;
+  };
 
   const totals = allMovements.reduce((acc, m) => {
-    // For shared fixed expenses, Karla's debt clears separately from the user's "paid" mark
+    const amount = getAmount(m);
     const karlaIsPaid = m.karlaIsPaid !== undefined ? m.karlaIsPaid : m.isPaid;
-    if (m.isPaid && karlaIsPaid) return acc;
-    if (!m.isPaid) {
-      if (m.type === 'Ingreso') {
-        acc.income += m.amount;
-      } else {
-        const myPart = m.myPart !== undefined ? m.myPart : (m.type === 'Compartido' ? m.amount / 2 : m.amount);
-        acc.indiv += myPart;
-        if (m.type === 'Compartido' || m.type === 'Deuda' || m.type === 'Préstamo') acc.shared += m.amount;
-      }
+
+    if (m.type === 'Ingreso') {
+      acc.income += amount;
+    } else {
+      acc.indiv += getMyPart(m);
+      if (m.type === 'Compartido') acc.shared += amount;
     }
+
     if (!karlaIsPaid) {
-      if (m.type === 'Compartido' || m.type === 'Deuda' || m.type === 'Préstamo')
-        acc.debt += (m.type === 'Compartido' ? m.amount / 2 : m.amount);
+      if (m.type === 'Compartido' || isReceivableType(m.type))
+        acc.debt += (m.type === 'Compartido' ? amount / 2 : amount);
       else if (m.type === 'Yo debo')
-        acc.debt -= m.amount;
+        acc.debt -= amount;
     }
     return acc;
   }, { income: 0, indiv: 0, shared: 0, debt: 0 });
 
   const CHART_COLORS = ['#3b82f6','#8b5cf6','#f97316','#10b981','#ec4899','#f59e0b','#06b6d4','#6366f1','#14b8a6','#f43f5e'];
   const TYPE_COLORS = { 'Compartido': '#3b82f6', 'Individual': '#8b5cf6', 'Yo debo': '#ef4444', 'Préstamo': '#f59e0b', 'Ingreso': '#10b981' };
-
-  const getMyPart = (m) => m.myPart !== undefined ? m.myPart : (m.type === 'Compartido' ? m.amount / 2 : m.amount);
 
   const dashMovements = movements.filter(m => !m.isPaid && m.type !== 'Ingreso');
 
