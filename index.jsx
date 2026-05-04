@@ -70,6 +70,9 @@ export default function App() {
 
   const [sortConfig, setSortConfig] = useState({ key: 'id', direction: 'desc' });
   const [activeTab, setActiveTab] = useState('movimientos');
+  const [aiAdvice, setAiAdvice] = useState(null);
+  const [aiAdviceLoading, setAiAdviceLoading] = useState(false);
+  const [aiAdviceError, setAiAdviceError] = useState('');
 
   // --- FORMATEO ---
   const formatCLP = (val) => new Intl.NumberFormat('es-CL', { style: 'currency', currency: 'CLP', minimumFractionDigits: 0 }).format(val || 0);
@@ -183,6 +186,65 @@ export default function App() {
   const saveFixedExpenses = async (expenses) => {
     if (!user) return;
     await setDoc(doc(db, 'artifacts', APP_COLLECTION_ID, 'users', user.uid, 'config', 'fixed_expenses'), { expenses });
+  };
+
+  const generateFinancialAdvice = async (dashByCat, dashByTyp, tots) => {
+    setAiAdviceLoading(true);
+    setAiAdviceError('');
+    setAiAdvice(null);
+    const monthName = currentDate.toLocaleString('es-CL', { month: 'long', year: 'numeric' });
+    const fmtN = (n) => new Intl.NumberFormat('es-CL', { style: 'currency', currency: 'CLP', minimumFractionDigits: 0 }).format(n);
+    const catLines = dashByCat.map(({ cat, total }) => `  - ${cat}: ${fmtN(total)}`).join('\n');
+    const typeLines = dashByTyp.map(({ type, total }) => `  - ${type}: ${fmtN(total)}`).join('\n');
+    const saldo = tots.income - tots.indiv;
+    const prompt = `Eres un asesor financiero personal experto. Analiza los datos del mes de ${monthName} y entrega consejos claros y accionables en español chileno.
+
+RESUMEN FINANCIERO:
+- Ingresos: ${fmtN(tots.income)}
+- Mis gastos totales (mi parte): ${fmtN(tots.indiv)}
+- Gastos compartidos totales: ${fmtN(tots.shared)}
+- Saldo neto del mes: ${fmtN(saldo)}
+
+MIS GASTOS POR CATEGORÍA:
+${catLines || '  (sin datos)'}
+
+MIS GASTOS POR TIPO:
+${typeLines || '  (sin datos)'}
+
+Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
+{
+  "diagnostico": "2-3 oraciones evaluando el mes",
+  "ahorro_recomendado": <número entero en CLP, sin formato>,
+  "ahorro_porcentaje": <número entre 0 y 100>,
+  "recomendaciones": ["consejo concreto 1", "consejo concreto 2", "consejo concreto 3"],
+  "alertas": ["alerta si aplica"],
+  "puntos_positivos": ["aspecto positivo si aplica"]
+}`;
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000);
+      const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        signal: controller.signal,
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${GROQ_API_KEY}` },
+        body: JSON.stringify({
+          model: 'llama-3.3-70b-versatile',
+          messages: [{ role: 'user', content: prompt }],
+          response_format: { type: 'json_object' }
+        })
+      });
+      clearTimeout(timeoutId);
+      if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.error?.message || `Error ${response.status}`);
+      }
+      const result = await response.json();
+      setAiAdvice(JSON.parse(result.choices[0].message.content));
+    } catch (err) {
+      setAiAdviceError(err.name === 'AbortError' ? 'Tiempo de espera agotado. Intenta de nuevo.' : err.message);
+    } finally {
+      setAiAdviceLoading(false);
+    }
   };
 
   const handleAddFixed = (e) => {
@@ -1060,6 +1122,94 @@ export default function App() {
                   </div>
                 );
               })}
+            </div>
+
+            {/* Análisis IA */}
+            <div className="bg-white rounded-[2.5rem] border border-slate-200 shadow-sm p-6">
+              <div className="flex items-start justify-between mb-2">
+                <div>
+                  <h3 className="font-black text-slate-800">Asesor Financiero IA</h3>
+                  <p className="text-[10px] text-slate-400 uppercase font-black mt-0.5">Recomendaciones personalizadas con inteligencia artificial</p>
+                </div>
+                <button
+                  onClick={() => generateFinancialAdvice(dashByCategory, dashByType, totals)}
+                  disabled={aiAdviceLoading || totals.income === 0}
+                  className="flex items-center gap-2 px-5 py-2.5 bg-slate-900 text-white rounded-2xl text-xs font-black hover:bg-slate-700 transition-all disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
+                >
+                  {aiAdviceLoading ? <><Loader2 size={14} className="animate-spin"/> Analizando...</> : '✦ Generar análisis'}
+                </button>
+              </div>
+
+              {aiAdviceError && (
+                <div className="mt-4 p-4 bg-red-50 border border-red-100 rounded-2xl text-sm text-red-600 font-medium">{aiAdviceError}</div>
+              )}
+
+              {!aiAdvice && !aiAdviceLoading && !aiAdviceError && (
+                <div className="mt-6 flex flex-col items-center justify-center py-8 text-center">
+                  <p className="text-4xl mb-3">✦</p>
+                  <p className="text-slate-400 text-sm font-medium">Presiona el botón para que la IA analice tus ingresos y gastos del mes y te entregue recomendaciones personalizadas.</p>
+                </div>
+              )}
+
+              {aiAdvice && (
+                <div className="mt-5 space-y-5">
+                  {/* Diagnóstico */}
+                  <div className="p-4 bg-slate-50 rounded-2xl">
+                    <p className="text-[9px] font-black text-slate-400 uppercase mb-2">Diagnóstico del mes</p>
+                    <p className="text-sm text-slate-700 leading-relaxed">{aiAdvice.diagnostico}</p>
+                  </div>
+
+                  {/* Ahorro recomendado */}
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="p-4 bg-green-50 border border-green-100 rounded-2xl text-center">
+                      <p className="text-[9px] font-black text-green-600 uppercase mb-1">Ahorro recomendado</p>
+                      <p className="text-2xl font-black text-green-700">{formatCLP(aiAdvice.ahorro_recomendado)}</p>
+                      <p className="text-[10px] text-green-500 font-medium mt-0.5">al mes</p>
+                    </div>
+                    <div className="p-4 bg-blue-50 border border-blue-100 rounded-2xl text-center">
+                      <p className="text-[9px] font-black text-blue-600 uppercase mb-1">Del ingreso</p>
+                      <p className="text-2xl font-black text-blue-700">{aiAdvice.ahorro_porcentaje}%</p>
+                      <p className="text-[10px] text-blue-500 font-medium mt-0.5">tasa de ahorro</p>
+                    </div>
+                  </div>
+
+                  {/* Alertas */}
+                  {aiAdvice.alertas?.length > 0 && (
+                    <div className="p-4 bg-amber-50 border border-amber-100 rounded-2xl">
+                      <p className="text-[9px] font-black text-amber-600 uppercase mb-2">⚠ Puntos de atención</p>
+                      <ul className="space-y-1.5">
+                        {aiAdvice.alertas.map((a, i) => <li key={i} className="text-sm text-amber-800 flex gap-2"><span className="shrink-0">•</span>{a}</li>)}
+                      </ul>
+                    </div>
+                  )}
+
+                  {/* Recomendaciones */}
+                  {aiAdvice.recomendaciones?.length > 0 && (
+                    <div>
+                      <p className="text-[9px] font-black text-slate-400 uppercase mb-2">Recomendaciones</p>
+                      <ul className="space-y-2">
+                        {aiAdvice.recomendaciones.map((r, i) => (
+                          <li key={i} className="flex gap-3 items-start text-sm text-slate-700 p-3 bg-slate-50 rounded-xl">
+                            <span className="font-black text-slate-300 shrink-0">{i + 1}</span>{r}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {/* Puntos positivos */}
+                  {aiAdvice.puntos_positivos?.length > 0 && (
+                    <div className="p-4 bg-green-50 border border-green-100 rounded-2xl">
+                      <p className="text-[9px] font-black text-green-600 uppercase mb-2">✓ Aspectos positivos</p>
+                      <ul className="space-y-1.5">
+                        {aiAdvice.puntos_positivos.map((p, i) => <li key={i} className="text-sm text-green-800 flex gap-2"><span className="shrink-0">•</span>{p}</li>)}
+                      </ul>
+                    </div>
+                  )}
+
+                  <p className="text-[9px] text-slate-300 text-center font-medium">Análisis generado por IA · Solo referencial</p>
+                </div>
+              )}
             </div>
           </div>
         )}
