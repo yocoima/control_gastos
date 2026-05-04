@@ -108,6 +108,7 @@ export default function App() {
   const isSharedType = (type) => isType(type, 'Compartido');
   const isReceivableType = (type) => isType(type, 'Deuda') || isType(type, 'Préstamo');
   const isOwedByMeType = (type) => isType(type, 'Yo debo');
+  const isTCCreditOrPayment = (item) => parseRawNumber(item.amount) < 0;
 
   // --- AUTENTICACIÓN ---
   useEffect(() => {
@@ -734,6 +735,17 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
     const items = [];
     const dateRe = /^\d{2}\/\d{2}\/\d{4}/;
     const parseAmount = (str) => parseInt(str.replace(/[$. ]/g, ''), 10) || 0;
+    const buildTCItem = ({ date, concept, amount }) => ({
+      id: Date.now().toString() + Math.random(),
+      date,
+      concept,
+      amount,
+      type: isTCCreditOrPayment({ amount }) ? 'Pago TC' : 'Individual',
+      category: 'Tarjeta Crédito',
+      myPart: isTCCreditOrPayment({ amount }) ? 0 : amount,
+      isPaid: false,
+      isExcluded: isTCCreditOrPayment({ amount })
+    });
 
     let i = 0;
     while (i < rawLines.length) {
@@ -747,16 +759,11 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
         if (parts.length >= 4 && parts[3].trim()) {
           // Formato estándar: FECHA\tDESC\tCIUDAD\tMONTO
           const rawAmount = parseAmount(parts[3]);
-          if (rawAmount !== 0) items.push({
-            id: Date.now().toString() + Math.random(),
+          if (rawAmount !== 0) items.push(buildTCItem({
             date: firstCol,
             concept: parts[1].trim(),
-            amount: rawAmount,
-            type: rawAmount < 0 ? 'Ingreso' : 'Individual',
-            category: 'Tarjeta Crédito',
-            myPart: rawAmount < 0 ? 0 : rawAmount,
-            isPaid: false, isExcluded: false
-          });
+            amount: rawAmount
+          }));
           i++;
         } else {
           // Formato multilínea: fecha sola, descripción y monto en líneas siguientes
@@ -776,16 +783,11 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
             descLines.push(next.replace(/\t/g, ' ').trim());
             i++;
           }
-          if (rawAmount !== null && rawAmount !== 0) items.push({
-            id: Date.now().toString() + Math.random(),
+          if (rawAmount !== null && rawAmount !== 0) items.push(buildTCItem({
             date: firstCol,
             concept: descLines.join(' ').trim() || 'Sin descripción',
-            amount: rawAmount,
-            type: rawAmount < 0 ? 'Ingreso' : 'Individual',
-            category: 'Tarjeta Crédito',
-            myPart: rawAmount < 0 ? 0 : rawAmount,
-            isPaid: false, isExcluded: false
-          });
+            amount: rawAmount
+          }));
         }
       } else {
         i++;
@@ -851,7 +853,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
   const withSource = (items, source) => items.map(item => ({ ...item, source }));
   const allMovements = [
     ...withSource(movements, 'Movimiento'),
-    ...tcBatches.flatMap(b => withSource(b.items.filter(i => !i.isExcluded), b.title ? `TC: ${b.title}` : 'TC')),
+    ...tcBatches.flatMap(b => withSource(b.items.filter(i => !i.isExcluded && !isTCCreditOrPayment(i)), b.title ? `TC: ${b.title}` : 'TC')),
     ...withSource(activeInstallments, 'Cuota'),
     ...withSource(activeFixedExpenses, 'Fijo')
   ];
