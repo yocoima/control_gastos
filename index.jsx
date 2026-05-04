@@ -853,7 +853,6 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
   const withSource = (items, source) => items.map(item => ({ ...item, source }));
   const allMovements = [
     ...withSource(movements, 'Movimiento'),
-    ...tcBatches.flatMap(b => withSource(b.items.filter(i => !i.isExcluded && !isTCCreditOrPayment(i)), b.title ? `TC: ${b.title}` : 'TC')),
     ...withSource(activeInstallments, 'Cuota'),
     ...withSource(activeFixedExpenses, 'Fijo')
   ];
