@@ -96,6 +96,18 @@ export default function App() {
     const parsed = Number(normalized);
     return Number.isFinite(parsed) ? parsed * sign : 0;
   };
+  const normalizeText = (val) => (val ?? '')
+    .toString()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+  const isType = (type, expected) => normalizeText(type) === normalizeText(expected);
+  const isIncomeType = (type) => isType(type, 'Ingreso');
+  const isSharedType = (type) => isType(type, 'Compartido');
+  const isReceivableType = (type) => isType(type, 'Deuda') || isType(type, 'Préstamo');
+  const isOwedByMeType = (type) => isType(type, 'Yo debo');
 
   // --- AUTENTICACIÓN ---
   useEffect(() => {
@@ -384,7 +396,8 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
     const isActive = installmentNumber >= 1 && installmentNumber <= plan.installments;
     const isFinished = installmentNumber > plan.installments;
     const isPaid = (plan.paidMonths || []).includes(monthKey);
-    const myPart = plan.type === 'Compartido' ? plan.monthlyAmount / 2 : plan.monthlyAmount;
+    const monthlyAmount = parseRawNumber(plan.monthlyAmount);
+    const myPart = isSharedType(plan.type) ? monthlyAmount / 2 : (isIncomeType(plan.type) ? 0 : monthlyAmount);
     return { installmentNumber, isActive, isFinished, isPaid, myPart };
   };
 
@@ -427,18 +440,22 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
     if (exp.startMonth > monthKey) return false;
     if (exp.endMonth && exp.endMonth < monthKey) return false;
     return true;
-  }).map(exp => ({
-    ...exp,
-    amount: exp.amount,
-    myPart: exp.type === 'Compartido' ? exp.amount / 2 : exp.type === 'Ingreso' ? 0 : exp.amount,
-    isPaid: (exp.paidMonths || []).includes(monthKey),
-    karlaIsPaid: (exp.karlaPaidMonths || []).includes(monthKey)
-  }));
+  }).map(exp => {
+    const amount = parseRawNumber(exp.amount);
+    return {
+      ...exp,
+      amount,
+      myPart: isSharedType(exp.type) ? amount / 2 : (isIncomeType(exp.type) ? 0 : amount),
+      isPaid: (exp.paidMonths || []).includes(monthKey),
+      karlaIsPaid: (exp.karlaPaidMonths || []).includes(monthKey)
+    };
+  });
 
   const activeInstallments = installmentPlans.map(plan => {
     const status = getInstallmentStatus(plan);
     if (!status.isActive) return null;
-    return { ...plan, amount: plan.monthlyAmount, ...status };
+    const monthlyAmount = parseRawNumber(plan.monthlyAmount);
+    return { ...plan, monthlyAmount, amount: monthlyAmount, ...status };
   }).filter(Boolean);
 
   // --- CARGA DE DATOS ---
@@ -577,7 +594,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
       amount: amt,
       type: type,
       category: f.get('category'),
-      myPart: type === 'Compartido' ? amt / 2 : (type === 'Ingreso' ? 0 : amt),
+      myPart: isSharedType(type) ? amt / 2 : (isIncomeType(type) ? 0 : amt),
       date: new Date().toLocaleDateString('es-CL'),
       isPaid: false
     };
@@ -595,7 +612,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
         const amt = field === 'amount' ? parseRawNumber(value) : m.amount;
         const type = field === 'type' ? value : m.type;
         newObj.amount = amt;
-        newObj.myPart = type === 'Compartido' ? amt / 2 : (type === 'Ingreso' ? 0 : amt);
+        newObj.myPart = isSharedType(type) ? amt / 2 : (isIncomeType(type) ? 0 : amt);
       }
       return newObj;
     }));
@@ -832,12 +849,11 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
   };
 
   const allMovements = [...movements, ...tcBatches.flatMap(b => b.items.filter(i => !i.isExcluded)), ...activeInstallments, ...activeFixedExpenses];
-  const isReceivableType = (type) => type === 'Deuda' || type === 'Préstamo';
   const getAmount = (m) => parseRawNumber(m.amount);
   const getMyPart = (m) => {
     const amount = getAmount(m);
-    if (m.type === 'Ingreso' || isReceivableType(m.type)) return 0;
-    if (m.type === 'Compartido') return m.myPart !== undefined ? parseRawNumber(m.myPart) : amount / 2;
+    if (isIncomeType(m.type) || isReceivableType(m.type)) return 0;
+    if (isSharedType(m.type)) return m.myPart !== undefined ? parseRawNumber(m.myPart) : amount / 2;
     return m.myPart !== undefined ? parseRawNumber(m.myPart) : amount;
   };
 
@@ -845,17 +861,17 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
     const amount = getAmount(m);
     const karlaIsPaid = m.karlaIsPaid !== undefined ? m.karlaIsPaid : m.isPaid;
 
-    if (m.type === 'Ingreso') {
+    if (isIncomeType(m.type)) {
       acc.income += amount;
     } else {
       acc.indiv += getMyPart(m);
-      if (m.type === 'Compartido') acc.shared += amount;
+      if (isSharedType(m.type)) acc.shared += amount;
     }
 
     if (!karlaIsPaid) {
-      if (m.type === 'Compartido' || isReceivableType(m.type))
-        acc.debt += (m.type === 'Compartido' ? amount / 2 : amount);
-      else if (m.type === 'Yo debo')
+      if (isSharedType(m.type) || isReceivableType(m.type))
+        acc.debt += (isSharedType(m.type) ? amount / 2 : amount);
+      else if (isOwedByMeType(m.type))
         acc.debt -= amount;
     }
     return acc;
@@ -864,7 +880,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
   const CHART_COLORS = ['#3b82f6','#8b5cf6','#f97316','#10b981','#ec4899','#f59e0b','#06b6d4','#6366f1','#14b8a6','#f43f5e'];
   const TYPE_COLORS = { 'Compartido': '#3b82f6', 'Individual': '#8b5cf6', 'Yo debo': '#ef4444', 'Préstamo': '#f59e0b', 'Ingreso': '#10b981' };
 
-  const dashMovements = movements.filter(m => !m.isPaid && m.type !== 'Ingreso');
+  const dashMovements = movements.filter(m => !m.isPaid && !isIncomeType(m.type));
 
   const dashByCategory = [...movCategories, ...dashMovements.map(m => m.category).filter(c => c && !movCategories.includes(c))]
     .reduce((acc, cat) => {
@@ -873,8 +889,8 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
       return acc;
     }, []).sort((a, b) => b.total - a.total);
 
-  const dashByType = movTypes.filter(t => t !== 'Ingreso').reduce((acc, type) => {
-    const total = dashMovements.filter(m => m.type === type).reduce((s, m) => s + getMyPart(m), 0);
+  const dashByType = movTypes.filter(t => !isIncomeType(t)).reduce((acc, type) => {
+    const total = dashMovements.filter(m => isType(m.type, type)).reduce((s, m) => s + getMyPart(m), 0);
     if (total > 0) acc.push({ type, total });
     return acc;
   }, []).sort((a, b) => b.total - a.total);
