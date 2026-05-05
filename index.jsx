@@ -65,6 +65,8 @@ export default function App() {
   const PROJECTION_SPECIAL_TYPES = ['Impuestos', 'Cumpleaños', 'Cuotas especiales', 'Viajes', 'Permiso de circulación', 'Vacaciones', 'Gasto extraordinario'];
   const PROJECTION_VARIABLE_CATEGORIES = ['Comida', 'Transporte'];
   const PROJECTION_FIXED_CATEGORIES = ['Gastos fijos', 'Cuentas'];
+  const PROJECTION_IGNORED_CATEGORIES = ['Tarjeta Crédito', 'Tarjeta Credito'];
+  const PROJECTION_IGNORED_TYPES = ['Pago TC'];
   const [movTypes, setMovTypes] = useState(DEFAULT_TYPES);
   const [movCategories, setMovCategories] = useState(DEFAULT_CATEGORIES);
   const [showTypesModal, setShowTypesModal] = useState(false);
@@ -123,6 +125,9 @@ export default function App() {
   const isReceivableType = (type) => isType(type, 'Deuda') || isType(type, 'Préstamo');
   const isOwedByMeType = (type) => isType(type, 'Yo debo');
   const isCategory = (category, expected) => normalizeText(category) === normalizeText(expected);
+  const isCreditCardProjectionItem = (item) =>
+    PROJECTION_IGNORED_CATEGORIES.some(category => isCategory(item.category, category)) ||
+    PROJECTION_IGNORED_TYPES.some(type => isType(item.type, type));
   const isTCCreditOrPayment = (item) => parseRawNumber(item.amount) < 0;
 
   // --- AUTENTICACIÓN ---
@@ -900,6 +905,8 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
   ];
 
   const getProjectionSummary = (items) => items.reduce((acc, item) => {
+    if (isCreditCardProjectionItem(item)) return acc;
+
     if (isIncomeType(item.type)) {
       acc.income += getAmount(item);
       return acc;
