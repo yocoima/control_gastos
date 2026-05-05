@@ -65,7 +65,6 @@ export default function App() {
   const PROJECTION_SPECIAL_TYPES = ['Impuestos', 'Cumpleaños', 'Cuotas especiales', 'Viajes', 'Permiso de circulación', 'Vacaciones', 'Gasto extraordinario'];
   const PROJECTION_VARIABLE_CATEGORIES = ['Comida', 'Transporte'];
   const PROJECTION_FIXED_CATEGORIES = ['Gastos fijos', 'Cuentas'];
-  const PROJECTION_IGNORED_CATEGORIES = ['Tarjeta Crédito', 'Tarjeta Credito'];
   const PROJECTION_IGNORED_TYPES = ['Pago TC'];
   const [movTypes, setMovTypes] = useState(DEFAULT_TYPES);
   const [movCategories, setMovCategories] = useState(DEFAULT_CATEGORIES);
@@ -125,8 +124,10 @@ export default function App() {
   const isReceivableType = (type) => isType(type, 'Deuda') || isType(type, 'Préstamo');
   const isOwedByMeType = (type) => isType(type, 'Yo debo');
   const isCategory = (category, expected) => normalizeText(category) === normalizeText(expected);
+  const includesNormalized = (value, pattern) => normalizeText(value).includes(normalizeText(pattern));
   const isCreditCardProjectionItem = (item) =>
-    PROJECTION_IGNORED_CATEGORIES.some(category => isCategory(item.category, category)) ||
+    includesNormalized(item.category, 'tarjeta') ||
+    includesNormalized(item.category, 'credito') ||
     PROJECTION_IGNORED_TYPES.some(type => isType(item.type, type));
   const isTCCreditOrPayment = (item) => parseRawNumber(item.amount) < 0;
 
@@ -885,6 +886,11 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
     if (isSharedType(m.type)) return m.myPart !== undefined ? parseRawNumber(m.myPart) : amount / 2;
     return m.myPart !== undefined ? parseRawNumber(m.myPart) : amount;
   };
+  const getProjectionExpenseAmount = (item) => {
+    if (isIncomeType(item.type) || isReceivableType(item.type)) return 0;
+    if (item.myPart !== undefined) return parseRawNumber(item.myPart);
+    return getMyPart(item);
+  };
 
   const getPreviousMonthKey = (targetMonthKey) => {
     const [year, month] = targetMonthKey.split('-').map(Number);
@@ -912,7 +918,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
       return acc;
     }
 
-    const amount = getMyPart(item);
+    const amount = getProjectionExpenseAmount(item);
     if (amount <= 0) return acc;
 
     const category = item.category || '';
@@ -960,9 +966,9 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
 
       const income = currentSummary.income > 0 ? currentSummary.income : previousSummary.income;
       const fixed = currentSummary.fixed > 0 ? currentSummary.fixed : previousSummary.fixed;
-      const food = previousSummary.food > 0 ? Math.max(currentSummary.food, previousSummary.food) : currentSummary.food;
-      const transport = previousSummary.transport > 0 ? Math.max(currentSummary.transport, previousSummary.transport) : currentSummary.transport;
-      const other = previousSummary.other > 0 ? Math.max(currentSummary.other, previousSummary.other) : currentSummary.other;
+      const food = previousSummary.food > 0 ? previousSummary.food : currentSummary.food;
+      const transport = previousSummary.transport > 0 ? previousSummary.transport : currentSummary.transport;
+      const other = previousSummary.other > 0 ? previousSummary.other : currentSummary.other;
       const expenses = fixed + food + transport + other + specialTotal;
 
       setProjectionResult({
@@ -970,6 +976,13 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
         income: Math.round(income),
         expenses: Math.round(expenses),
         balance: Math.round(income - expenses),
+        breakdown: {
+          fixed: Math.round(fixed),
+          food: Math.round(food),
+          transport: Math.round(transport),
+          other: Math.round(other),
+          special: Math.round(specialTotal)
+        },
         specialExpenses: projectionItems.map(item => ({ ...item, amount: parseRawNumber(item.amount) }))
       });
     } catch (err) {
@@ -1860,6 +1873,34 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
                 <p className="text-sm sm:text-base text-slate-700 leading-relaxed">
                   Para <span className="font-black capitalize">{projectionResult.monthName}</span> estimas gastar <span className="font-black text-slate-900">{formatCLP(projectionResult.expenses)}</span>, ingresar <span className="font-black text-green-700">{formatCLP(projectionResult.income)}</span> y quedar con <span className={`font-black ${projectionResult.balance < 0 ? 'text-red-600' : 'text-emerald-700'}`}>{formatCLP(projectionResult.balance)}</span>.
                 </p>
+
+                <details className="mt-5 bg-white/70 border border-emerald-100 rounded-2xl overflow-hidden">
+                  <summary className="cursor-pointer select-none px-4 py-3 text-[10px] font-black uppercase text-emerald-700">
+                    Detalle del calculo
+                  </summary>
+                  <div className="px-4 pb-4 space-y-2 text-sm">
+                    <div className="flex justify-between gap-3">
+                      <span className="text-slate-600 font-bold">Fijos y cuotas</span>
+                      <span className="font-black text-slate-800">{formatCLP(projectionResult.breakdown.fixed)}</span>
+                    </div>
+                    <div className="flex justify-between gap-3">
+                      <span className="text-slate-600 font-bold">Comida</span>
+                      <span className="font-black text-slate-800">{formatCLP(projectionResult.breakdown.food)}</span>
+                    </div>
+                    <div className="flex justify-between gap-3">
+                      <span className="text-slate-600 font-bold">Transporte</span>
+                      <span className="font-black text-slate-800">{formatCLP(projectionResult.breakdown.transport)}</span>
+                    </div>
+                    <div className="flex justify-between gap-3">
+                      <span className="text-slate-600 font-bold">Otros movimientos</span>
+                      <span className="font-black text-slate-800">{formatCLP(projectionResult.breakdown.other)}</span>
+                    </div>
+                    <div className="flex justify-between gap-3 border-t border-emerald-100 pt-2">
+                      <span className="text-slate-600 font-bold">Gastos especiales</span>
+                      <span className="font-black text-slate-800">{formatCLP(projectionResult.breakdown.special)}</span>
+                    </div>
+                  </div>
+                </details>
 
                 <div className="mt-5">
                   <p className="text-[10px] font-black uppercase text-emerald-700 mb-3">Gastos especiales detectados:</p>
