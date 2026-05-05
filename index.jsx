@@ -54,6 +54,8 @@ export default function App() {
   const [projectionResult, setProjectionResult] = useState(null);
   const [projectionLoading, setProjectionLoading] = useState(false);
   const [projectionError, setProjectionError] = useState('');
+  const [editingProjectionItemId, setEditingProjectionItemId] = useState(null);
+  const [editingProjectionItemData, setEditingProjectionItemData] = useState({ type: '', amount: '' });
   const [evidence, setEvidence] = useState([]);
   const [showEvidence, setShowEvidence] = useState(false);
   const [evidenceViewer, setEvidenceViewer] = useState(null);
@@ -507,18 +509,31 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
         setBalances(data.balances || { itau: 0, scotia: 0, edenred: 0, tc_deuda: 0 });
         setTcBatches(data.tcBatches || []);
         setEvidence(data.evidence || []);
+        setProjectionItems((data.projection?.items || []).map(item => ({ ...item, amount: parseRawNumber(item.amount) })));
+        setProjectionResult(data.projection?.result || null);
       } else {
         setMovements([]);
         setBalances({ itau: 0, scotia: 0, edenred: 0, tc_deuda: 0 });
         setTcBatches([]);
         setEvidence([]);
+        setProjectionItems([]);
+        setProjectionResult(null);
       }
+      setProjectionError('');
+      setEditingProjectionItemId(null);
+      setEditingProjectionItemData({ type: '', amount: '' });
       setLoading(false);
     }, (err) => setLoading(false));
     return () => unsubscribe();
   }, [user, monthKey]);
 
-  const saveToCloud = async (newMovs, newBals, newBatches = tcBatches, newEvidence = evidence) => {
+  const normalizeProjectionRecord = (projection = {}) => ({
+    items: (projection.items || []).map(item => ({ ...item, amount: parseRawNumber(item.amount) })),
+    result: projection.result || null,
+    updatedAt: projection.updatedAt || new Date().toISOString()
+  });
+
+  const saveToCloud = async (newMovs, newBals, newBatches = tcBatches, newEvidence = evidence, newProjection = { items: projectionItems, result: projectionResult }) => {
     if (!user) return;
     try {
       await setDoc(doc(db, 'artifacts', APP_COLLECTION_ID, 'users', user.uid, 'monthly_records', monthKey), {
@@ -526,6 +541,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
         balances: newBals,
         tcBatches: newBatches,
         evidence: newEvidence,
+        projection: normalizeProjectionRecord(newProjection),
         updatedAt: new Date().toISOString()
       });
     } catch (err) {
@@ -959,19 +975,58 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
     details: { fixed: [], food: [], transport: [], other: [] }
   });
 
-  const addProjectionItem = (e) => {
+  const persistProjection = async (items, result) => {
+    await saveToCloud(movements, balances, tcBatches, evidence, {
+      items,
+      result,
+      updatedAt: new Date().toISOString()
+    });
+  };
+
+  const addProjectionItem = async (e) => {
     e.preventDefault();
     const amount = parseRawNumber(projectionAmount);
     if (amount <= 0) return;
-    setProjectionItems(prev => [...prev, { id: Date.now().toString(), type: projectionType, amount }]);
+    const updated = [...projectionItems, { id: Date.now().toString(), type: projectionType, amount }];
+    setProjectionItems(updated);
     setProjectionAmount('');
     setProjectionResult(null);
     setProjectionError('');
+    await persistProjection(updated, null);
   };
 
-  const removeProjectionItem = (id) => {
-    setProjectionItems(prev => prev.filter(item => item.id !== id));
+  const removeProjectionItem = async (id) => {
+    const updated = projectionItems.filter(item => item.id !== id);
+    setProjectionItems(updated);
     setProjectionResult(null);
+    if (editingProjectionItemId === id) {
+      setEditingProjectionItemId(null);
+      setEditingProjectionItemData({ type: '', amount: '' });
+    }
+    await persistProjection(updated, null);
+  };
+
+  const startEditProjectionItem = (item) => {
+    setEditingProjectionItemId(item.id);
+    setEditingProjectionItemData({ type: item.type, amount: formatInputNumber(item.amount) });
+  };
+
+  const cancelEditProjectionItem = () => {
+    setEditingProjectionItemId(null);
+    setEditingProjectionItemData({ type: '', amount: '' });
+  };
+
+  const saveProjectionItemEdit = async (id) => {
+    const amount = parseRawNumber(editingProjectionItemData.amount);
+    if (amount <= 0) return;
+    const updated = projectionItems.map(item =>
+      item.id === id ? { ...item, type: editingProjectionItemData.type, amount } : item
+    );
+    setProjectionItems(updated);
+    setProjectionResult(null);
+    setProjectionError('');
+    cancelEditProjectionItem();
+    await persistProjection(updated, null);
   };
 
   const calculateExpenseProjection = async () => {
@@ -988,8 +1043,9 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
       const other = summary.other;
       const expenses = fixed + food + transport + other + specialTotal;
 
-      setProjectionResult({
+      const result = {
         monthName: currentDate.toLocaleString('es-CL', { month: 'long' }),
+        monthKey,
         income: Math.round(income),
         expenses: Math.round(expenses),
         balance: Math.round(income - expenses),
@@ -1006,8 +1062,11 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
           transport: summary.details.transport,
           other: summary.details.other
         },
-        specialExpenses: projectionItems.map(item => ({ ...item, amount: parseRawNumber(item.amount) }))
-      });
+        specialExpenses: projectionItems.map(item => ({ ...item, amount: parseRawNumber(item.amount) })),
+        generatedAt: new Date().toISOString()
+      };
+      setProjectionResult(result);
+      await persistProjection(projectionItems, result);
     } catch (err) {
       setProjectionError('No se pudo calcular la proyeccion. Intenta nuevamente.');
     } finally {
@@ -1200,7 +1259,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
         </div>
 
         {/* Resumen */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-8">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
           <div className="bg-green-50/50 p-5 rounded-[2rem] border border-green-100">
             <p className="text-[10px] text-green-600 font-black uppercase mb-1">Ingresos</p>
             <p className="text-2xl font-black text-green-700">{formatCLP(totals.income)}</p>
@@ -1216,6 +1275,42 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
           <div className="bg-blue-600 p-5 rounded-[2rem] text-white shadow-xl shadow-blue-100 ring-4 ring-white">
             <p className="text-[10px] font-black uppercase mb-1 text-blue-200 tracking-wider">A Cobrar</p>
             <p className="text-2xl font-black">{formatCLP(totals.debt)}</p>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-[2rem] border border-slate-200 shadow-sm p-5 mb-8">
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+            <div>
+              <p className="text-[10px] font-black uppercase text-emerald-700 mb-1">Proyeccion del mes</p>
+              {projectionResult ? (
+                <p className="text-sm text-slate-600 font-medium">
+                  Para <span className="font-black capitalize text-slate-800">{projectionResult.monthName}</span> estimas gastar <span className="font-black text-slate-900">{formatCLP(projectionResult.expenses)}</span>, ingresar <span className="font-black text-green-700">{formatCLP(projectionResult.income)}</span> y quedar con <span className={`font-black ${projectionResult.balance < 0 ? 'text-red-600' : 'text-emerald-700'}`}>{formatCLP(projectionResult.balance)}</span>.
+                </p>
+              ) : (
+                <p className="text-sm text-slate-400 font-medium">Sin proyeccion generada para este mes.</p>
+              )}
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              {projectionResult && (
+                <>
+                  <div className="px-3 py-2 bg-slate-50 rounded-xl border border-slate-100">
+                    <p className="text-[9px] font-black text-slate-400 uppercase">Gasto</p>
+                    <p className="text-sm font-black text-slate-800">{formatCLP(projectionResult.expenses)}</p>
+                  </div>
+                  <div className="px-3 py-2 bg-green-50 rounded-xl border border-green-100">
+                    <p className="text-[9px] font-black text-green-600 uppercase">Ingreso</p>
+                    <p className="text-sm font-black text-green-700">{formatCLP(projectionResult.income)}</p>
+                  </div>
+                  <div className={`px-3 py-2 rounded-xl border ${projectionResult.balance < 0 ? 'bg-red-50 border-red-100' : 'bg-emerald-50 border-emerald-100'}`}>
+                    <p className={`text-[9px] font-black uppercase ${projectionResult.balance < 0 ? 'text-red-600' : 'text-emerald-600'}`}>Saldo</p>
+                    <p className={`text-sm font-black ${projectionResult.balance < 0 ? 'text-red-700' : 'text-emerald-700'}`}>{formatCLP(projectionResult.balance)}</p>
+                  </div>
+                </>
+              )}
+              <button onClick={() => setShowProjectionModal(true)} className="px-4 py-3 bg-emerald-600 text-white rounded-xl text-[10px] font-black uppercase hover:bg-emerald-700 transition-all flex items-center gap-2">
+                <Calculator size={14}/> {projectionResult ? 'Actualizar' : 'Generar'}
+              </button>
+            </div>
           </div>
         </div>
 
@@ -1867,18 +1962,48 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
                 </div>
               ) : (
                 <div className="divide-y divide-slate-100 border border-slate-100 rounded-2xl overflow-hidden">
-                  {projectionItems.map(item => (
-                    <div key={item.id} className="flex items-center justify-between gap-3 px-4 py-3 bg-white">
-                      <div className="min-w-0">
-                        <p className="font-black text-sm text-slate-800 truncate">{item.type}</p>
-                        <p className="text-[9px] font-black uppercase text-slate-400">Gasto especial</p>
+                  {projectionItems.map(item => {
+                    const isEditingProjectionItem = editingProjectionItemId === item.id;
+                    return (
+                      <div key={item.id} className="flex items-center justify-between gap-3 px-4 py-3 bg-white">
+                        {isEditingProjectionItem ? (
+                          <>
+                            <div className="grid grid-cols-1 sm:grid-cols-[1fr_150px] gap-2 flex-1">
+                              <select
+                                value={editingProjectionItemData.type}
+                                onChange={e => setEditingProjectionItemData(data => ({ ...data, type: e.target.value }))}
+                                className="w-full bg-slate-50 border-2 border-emerald-100 rounded-xl px-3 py-2 text-sm font-bold outline-none focus:bg-white focus:border-emerald-500"
+                              >
+                                {PROJECTION_SPECIAL_TYPES.map(type => <option key={type} value={type}>{type}</option>)}
+                              </select>
+                              <input
+                                value={editingProjectionItemData.amount}
+                                onChange={e => setEditingProjectionItemData(data => ({ ...data, amount: formatInputNumber(e.target.value) }))}
+                                inputMode="numeric"
+                                className="w-full bg-slate-50 border-2 border-emerald-100 rounded-xl px-3 py-2 text-sm font-black outline-none focus:bg-white focus:border-emerald-500"
+                              />
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <button onClick={() => saveProjectionItemEdit(item.id)} type="button" className="p-2 text-green-600 hover:bg-green-50 rounded-xl transition-colors"><Save size={16}/></button>
+                              <button onClick={cancelEditProjectionItem} type="button" className="p-2 text-slate-300 hover:text-slate-500 hover:bg-slate-50 rounded-xl transition-colors"><X size={16}/></button>
+                            </div>
+                          </>
+                        ) : (
+                          <>
+                            <div className="min-w-0">
+                              <p className="font-black text-sm text-slate-800 truncate">{item.type}</p>
+                              <p className="text-[9px] font-black uppercase text-slate-400">Gasto especial</p>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <span className="font-black text-slate-800 whitespace-nowrap">{formatCLP(item.amount)}</span>
+                              <button onClick={() => startEditProjectionItem(item)} type="button" className="p-2 text-slate-300 hover:text-blue-500 transition-colors"><Edit2 size={16}/></button>
+                              <button onClick={() => removeProjectionItem(item.id)} type="button" className="p-2 text-slate-300 hover:text-red-500 transition-colors"><Trash2 size={16}/></button>
+                            </div>
+                          </>
+                        )}
                       </div>
-                      <div className="flex items-center gap-3">
-                        <span className="font-black text-slate-800 whitespace-nowrap">{formatCLP(item.amount)}</span>
-                        <button onClick={() => removeProjectionItem(item.id)} type="button" className="p-2 text-slate-300 hover:text-red-500 transition-colors"><Trash2 size={16}/></button>
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>
