@@ -104,10 +104,24 @@ export default function App() {
     const cleaned = raw.replace(/[^\d,.-]/g, "");
     const sign = cleaned.includes("-") ? -1 : 1;
     const unsigned = cleaned.replace(/-/g, "");
-    const dotCount = (unsigned.match(/\./g) || []).length;
-    const commaCount = (unsigned.match(/,/g) || []).length;
-    const hasDecimalDot = dotCount === 1 && commaCount === 0 && /\.\d{1,2}$/.test(unsigned);
-    const normalized = hasDecimalDot ? unsigned : unsigned.replace(/[.,]/g, "");
+    if (!unsigned) return 0;
+
+    const lastDot = unsigned.lastIndexOf(".");
+    const lastComma = unsigned.lastIndexOf(",");
+    const lastSeparator = Math.max(lastDot, lastComma);
+    let normalized = unsigned.replace(/[.,]/g, "");
+
+    if (lastSeparator !== -1) {
+      const integerPart = unsigned.slice(0, lastSeparator);
+      const decimalPart = unsigned.slice(lastSeparator + 1);
+      const hasMixedSeparators = lastDot !== -1 && lastComma !== -1;
+      const looksLikeDecimal = /^\d{1,2}$/.test(decimalPart) && (hasMixedSeparators || decimalPart.length < 3);
+
+      if (looksLikeDecimal) {
+        normalized = `${integerPart.replace(/[.,]/g, "")}.${decimalPart}`;
+      }
+    }
+
     const parsed = Number(normalized);
     return Number.isFinite(parsed) ? parsed * sign : 0;
   };
