@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
-import { getFirestore, doc, setDoc, onSnapshot } from 'firebase/firestore';
+import { getFirestore, doc, setDoc, onSnapshot, getDoc } from 'firebase/firestore';
 import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signOut } from 'firebase/auth';
 import { 
   ChevronLeft, ChevronRight, Trash2, ReceiptText, ChevronUp, ChevronDown, Eye, EyeOff,
   CheckCircle2, Camera, Loader2, Edit2, Save, Image as ImageIcon, LogOut, Plus,
-  CreditCard, Wallet, ArrowRightLeft, Copy, Check, Download, Upload, ShieldCheck, Settings, X
+  CreditCard, Wallet, ArrowRightLeft, Copy, Check, Download, Upload, ShieldCheck, Settings, X, Calculator
 } from 'lucide-react';
 
 // --- CONFIGURACIÓN FIREBASE ---
@@ -47,6 +47,13 @@ export default function App() {
   const [showAllInstallments, setShowAllInstallments] = useState(false);
   const [fixedExpenses, setFixedExpenses] = useState([]);
   const [showFixedModal, setShowFixedModal] = useState(false);
+  const [showProjectionModal, setShowProjectionModal] = useState(false);
+  const [projectionItems, setProjectionItems] = useState([]);
+  const [projectionType, setProjectionType] = useState('Impuestos');
+  const [projectionAmount, setProjectionAmount] = useState('');
+  const [projectionResult, setProjectionResult] = useState(null);
+  const [projectionLoading, setProjectionLoading] = useState(false);
+  const [projectionError, setProjectionError] = useState('');
   const [evidence, setEvidence] = useState([]);
   const [showEvidence, setShowEvidence] = useState(false);
   const [evidenceViewer, setEvidenceViewer] = useState(null);
@@ -55,6 +62,9 @@ export default function App() {
   const evidenceInputRef = useRef(null);
   const DEFAULT_TYPES = ['Compartido', 'Individual', 'Yo debo', 'Préstamo', 'Ingreso'];
   const DEFAULT_CATEGORIES = ['Comida', 'Gastos fijos', 'Cuentas', 'Transporte', 'Diversión', 'Sueldo', 'Otros'];
+  const PROJECTION_SPECIAL_TYPES = ['Impuestos', 'Cumpleaños', 'Cuotas especiales', 'Viajes', 'Permiso de circulación', 'Vacaciones', 'Gasto extraordinario'];
+  const PROJECTION_VARIABLE_CATEGORIES = ['Comida', 'Transporte'];
+  const PROJECTION_FIXED_CATEGORIES = ['Gastos fijos', 'Cuentas'];
   const [movTypes, setMovTypes] = useState(DEFAULT_TYPES);
   const [movCategories, setMovCategories] = useState(DEFAULT_CATEGORIES);
   const [showTypesModal, setShowTypesModal] = useState(false);
@@ -67,7 +77,10 @@ export default function App() {
   const camInputRef = useRef(null);
   const galleryInputRef = useRef(null);
   const csvInputRef = useRef(null);
-  const monthKey = `${currentDate.getFullYear()}-${(currentDate.getMonth() + 1).toString().padStart(2, '0')}`;
+  const getMonthKey = (date) => `${date.getFullYear()}-${(date.getMonth() + 1).toString().padStart(2, '0')}`;
+  const monthKey = getMonthKey(currentDate);
+  const projectionDate = new Date();
+  const projectionMonthKey = getMonthKey(projectionDate);
 
   const [sortConfig, setSortConfig] = useState({ key: 'id', direction: 'desc' });
   const [activeTab, setActiveTab] = useState('movimientos');
@@ -109,6 +122,7 @@ export default function App() {
   const isSharedType = (type) => isType(type, 'Compartido');
   const isReceivableType = (type) => isType(type, 'Deuda') || isType(type, 'Préstamo');
   const isOwedByMeType = (type) => isType(type, 'Yo debo');
+  const isCategory = (category, expected) => normalizeText(category) === normalizeText(expected);
   const isTCCreditOrPayment = (item) => parseRawNumber(item.amount) < 0;
 
   // --- AUTENTICACIÓN ---
@@ -389,15 +403,14 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
     saveInstallmentPlans(updated);
   };
 
-  const getInstallmentStatus = (plan) => {
-    const currYear = currentDate.getFullYear();
-    const currMonth = currentDate.getMonth() + 1;
+  const getInstallmentStatusForMonth = (plan, targetMonthKey = monthKey) => {
+    const [currYear, currMonth] = targetMonthKey.split('-').map(Number);
     const [startYear, startMonthNum] = plan.startMonth.split('-').map(Number);
     const monthsElapsed = (currYear - startYear) * 12 + (currMonth - startMonthNum);
     const installmentNumber = monthsElapsed + 1;
     const isActive = installmentNumber >= 1 && installmentNumber <= plan.installments;
     const isFinished = installmentNumber > plan.installments;
-    const isPaid = (plan.paidMonths || []).includes(monthKey);
+    const isPaid = (plan.paidMonths || []).includes(targetMonthKey);
     const monthlyAmount = parseRawNumber(plan.monthlyAmount);
     const myPart = isSharedType(plan.type) ? monthlyAmount / 2 : (isIncomeType(plan.type) ? 0 : monthlyAmount);
     return { installmentNumber, isActive, isFinished, isPaid, myPart };
@@ -438,9 +451,9 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
     return () => document.removeEventListener('paste', handler);
   }, [showEvidence]);
 
-  const activeFixedExpenses = fixedExpenses.filter(exp => {
-    if (exp.startMonth > monthKey) return false;
-    if (exp.endMonth && exp.endMonth < monthKey) return false;
+  const getActiveFixedExpensesForMonth = (targetMonthKey) => fixedExpenses.filter(exp => {
+    if (exp.startMonth > targetMonthKey) return false;
+    if (exp.endMonth && exp.endMonth < targetMonthKey) return false;
     return true;
   }).map(exp => {
     const amount = parseRawNumber(exp.amount);
@@ -448,17 +461,20 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
       ...exp,
       amount,
       myPart: isSharedType(exp.type) ? amount / 2 : (isIncomeType(exp.type) ? 0 : amount),
-      isPaid: (exp.paidMonths || []).includes(monthKey),
-      karlaIsPaid: (exp.karlaPaidMonths || []).includes(monthKey)
+      isPaid: (exp.paidMonths || []).includes(targetMonthKey),
+      karlaIsPaid: (exp.karlaPaidMonths || []).includes(targetMonthKey)
     };
   });
 
-  const activeInstallments = installmentPlans.map(plan => {
-    const status = getInstallmentStatus(plan);
+  const getActiveInstallmentsForMonth = (targetMonthKey) => installmentPlans.map(plan => {
+    const status = getInstallmentStatusForMonth(plan, targetMonthKey);
     if (!status.isActive) return null;
     const monthlyAmount = parseRawNumber(plan.monthlyAmount);
     return { ...plan, monthlyAmount, amount: monthlyAmount, ...status };
   }).filter(Boolean);
+
+  const activeFixedExpenses = getActiveFixedExpensesForMonth(monthKey);
+  const activeInstallments = getActiveInstallmentsForMonth(monthKey);
 
   // --- CARGA DE DATOS ---
   useEffect(() => {
@@ -865,6 +881,97 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
     return m.myPart !== undefined ? parseRawNumber(m.myPart) : amount;
   };
 
+  const getPreviousMonthKey = (targetMonthKey) => {
+    const [year, month] = targetMonthKey.split('-').map(Number);
+    return getMonthKey(new Date(year, month - 2, 1));
+  };
+
+  const fetchMonthlyRecord = async (targetMonthKey) => {
+    if (targetMonthKey === monthKey) return { movements, tcBatches };
+    if (!user) return { movements: [], tcBatches: [] };
+    const snap = await getDoc(doc(db, 'artifacts', APP_COLLECTION_ID, 'users', user.uid, 'monthly_records', targetMonthKey));
+    return snap.exists() ? snap.data() : { movements: [], tcBatches: [] };
+  };
+
+  const getProjectionItemsForMonth = (recordMovements, targetMonthKey) => [
+    ...withSource(recordMovements || [], 'Movimiento'),
+    ...withSource(getActiveInstallmentsForMonth(targetMonthKey), 'Cuota'),
+    ...withSource(getActiveFixedExpensesForMonth(targetMonthKey), 'Fijo')
+  ];
+
+  const getProjectionSummary = (items) => items.reduce((acc, item) => {
+    if (isIncomeType(item.type)) {
+      acc.income += getAmount(item);
+      return acc;
+    }
+
+    const amount = getMyPart(item);
+    if (amount <= 0) return acc;
+
+    const category = item.category || '';
+    if (PROJECTION_VARIABLE_CATEGORIES.some(cat => isCategory(category, cat))) {
+      acc.variable += amount;
+      if (isCategory(category, 'Comida')) acc.food += amount;
+      if (isCategory(category, 'Transporte')) acc.transport += amount;
+    } else if (item.source === 'Fijo' || item.source === 'Cuota' || PROJECTION_FIXED_CATEGORIES.some(cat => isCategory(category, cat))) {
+      acc.fixed += amount;
+    } else {
+      acc.other += amount;
+    }
+
+    return acc;
+  }, { income: 0, fixed: 0, variable: 0, food: 0, transport: 0, other: 0 });
+
+  const addProjectionItem = (e) => {
+    e.preventDefault();
+    const amount = parseRawNumber(projectionAmount);
+    if (amount <= 0) return;
+    setProjectionItems(prev => [...prev, { id: Date.now().toString(), type: projectionType, amount }]);
+    setProjectionAmount('');
+    setProjectionResult(null);
+    setProjectionError('');
+  };
+
+  const removeProjectionItem = (id) => {
+    setProjectionItems(prev => prev.filter(item => item.id !== id));
+    setProjectionResult(null);
+  };
+
+  const calculateExpenseProjection = async () => {
+    setProjectionLoading(true);
+    setProjectionError('');
+    try {
+      const previousMonthKey = getPreviousMonthKey(projectionMonthKey);
+      const [currentRecord, previousRecord] = await Promise.all([
+        fetchMonthlyRecord(projectionMonthKey),
+        fetchMonthlyRecord(previousMonthKey)
+      ]);
+
+      const currentSummary = getProjectionSummary(getProjectionItemsForMonth(currentRecord.movements || [], projectionMonthKey));
+      const previousSummary = getProjectionSummary(getProjectionItemsForMonth(previousRecord.movements || [], previousMonthKey));
+      const specialTotal = projectionItems.reduce((sum, item) => sum + parseRawNumber(item.amount), 0);
+
+      const income = currentSummary.income > 0 ? currentSummary.income : previousSummary.income;
+      const fixed = currentSummary.fixed > 0 ? currentSummary.fixed : previousSummary.fixed;
+      const food = previousSummary.food > 0 ? Math.max(currentSummary.food, previousSummary.food) : currentSummary.food;
+      const transport = previousSummary.transport > 0 ? Math.max(currentSummary.transport, previousSummary.transport) : currentSummary.transport;
+      const other = previousSummary.other > 0 ? Math.max(currentSummary.other, previousSummary.other) : currentSummary.other;
+      const expenses = fixed + food + transport + other + specialTotal;
+
+      setProjectionResult({
+        monthName: projectionDate.toLocaleString('es-CL', { month: 'long' }),
+        income: Math.round(income),
+        expenses: Math.round(expenses),
+        balance: Math.round(income - expenses),
+        specialExpenses: projectionItems.map(item => ({ ...item, amount: parseRawNumber(item.amount) }))
+      });
+    } catch (err) {
+      setProjectionError('No se pudo calcular la proyeccion. Intenta nuevamente.');
+    } finally {
+      setProjectionLoading(false);
+    }
+  };
+
   const totals = allMovements.reduce((acc, m) => {
     const amount = getAmount(m);
     const karlaIsPaid = m.karlaIsPaid !== undefined ? m.karlaIsPaid : m.isPaid;
@@ -996,6 +1103,9 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
 
             <button onClick={() => setShowTypesModal(true)} className="p-1.5 bg-slate-50 text-slate-700 rounded-xl border border-slate-200 hover:bg-slate-100 transition-all flex items-center gap-1 shadow-sm" title="Gestionar tipos">
               <Settings size={16} /> <span className="text-[10px] font-black uppercase hidden lg:inline">Tipos</span>
+            </button>
+            <button onClick={() => setShowProjectionModal(true)} className="p-1.5 bg-emerald-50 text-emerald-700 rounded-xl border border-emerald-100 hover:bg-emerald-100 transition-all flex items-center gap-1 shadow-sm" title="Proyeccion de gastos">
+              <Calculator size={16} /> <span className="text-[10px] font-black uppercase hidden lg:inline">Proyeccion</span>
             </button>
             <button onClick={() => signOut(auth)} className="ml-2 p-1.5 bg-red-50 text-red-600 rounded-xl border border-red-100 hover:bg-red-100 transition-all flex items-center gap-1 shadow-sm" title="Cerrar Sesión">
               <LogOut size={16} /> <span className="text-[10px] font-black uppercase hidden lg:inline">Salir</span>
@@ -1686,6 +1796,85 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
       </main>
 
       {/* Modales */}
+      {showProjectionModal && (
+        <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-md z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-[3rem] p-8 w-full max-w-2xl max-h-[92vh] overflow-y-auto">
+            <div className="flex justify-between items-start gap-4 mb-6">
+              <div>
+                <h3 className="font-black text-2xl">Proyeccion de gastos</h3>
+                <p className="text-slate-500 text-sm mt-1">Agrega gastos especiales del mes en curso.</p>
+              </div>
+              <button onClick={() => setShowProjectionModal(false)} className="p-2 text-slate-400 hover:bg-slate-100 rounded-xl"><X size={20}/></button>
+            </div>
+
+            <form onSubmit={addProjectionItem} className="grid grid-cols-1 sm:grid-cols-[1fr_160px_auto] gap-3 mb-5">
+              <select value={projectionType} onChange={e => setProjectionType(e.target.value)} className="w-full bg-slate-50 border-2 border-transparent rounded-2xl px-4 py-4 text-sm font-bold outline-none focus:bg-white focus:border-emerald-500">
+                {PROJECTION_SPECIAL_TYPES.map(type => <option key={type} value={type}>{type}</option>)}
+              </select>
+              <input value={projectionAmount} onChange={e => setProjectionAmount(formatInputNumber(e.target.value))} inputMode="numeric" placeholder="$ 0" className="w-full bg-slate-50 border-2 border-transparent rounded-2xl px-4 py-4 text-sm font-black outline-none focus:bg-white focus:border-emerald-500" />
+              <button type="submit" className="px-5 py-4 bg-emerald-600 text-white rounded-2xl font-black text-xs uppercase hover:bg-emerald-700 transition-all flex items-center justify-center gap-2">
+                <Plus size={16}/> Agregar
+              </button>
+            </form>
+
+            <div className="mb-6">
+              {projectionItems.length === 0 ? (
+                <div className="bg-slate-50 border border-slate-100 rounded-2xl px-4 py-5 text-center text-sm font-medium text-slate-400">
+                  Sin gastos especiales agregados
+                </div>
+              ) : (
+                <div className="divide-y divide-slate-100 border border-slate-100 rounded-2xl overflow-hidden">
+                  {projectionItems.map(item => (
+                    <div key={item.id} className="flex items-center justify-between gap-3 px-4 py-3 bg-white">
+                      <div className="min-w-0">
+                        <p className="font-black text-sm text-slate-800 truncate">{item.type}</p>
+                        <p className="text-[9px] font-black uppercase text-slate-400">Gasto especial</p>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <span className="font-black text-slate-800 whitespace-nowrap">{formatCLP(item.amount)}</span>
+                        <button onClick={() => removeProjectionItem(item.id)} type="button" className="p-2 text-slate-300 hover:text-red-500 transition-colors"><Trash2 size={16}/></button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <button onClick={calculateExpenseProjection} disabled={projectionLoading} className="w-full bg-slate-900 text-white font-black py-4 rounded-2xl shadow-xl hover:bg-slate-800 transition-all disabled:opacity-50 flex items-center justify-center gap-2">
+              {projectionLoading ? <><Loader2 size={18} className="animate-spin"/> Calculando...</> : <><Calculator size={18}/> Calcular proyeccion</>}
+            </button>
+
+            {projectionError && (
+              <div className="mt-4 p-4 bg-red-50 border border-red-100 rounded-2xl text-sm text-red-600 font-medium">{projectionError}</div>
+            )}
+
+            {projectionResult && (
+              <div className="mt-6 bg-emerald-50/70 border border-emerald-100 rounded-[2rem] p-5">
+                <p className="text-sm sm:text-base text-slate-700 leading-relaxed">
+                  Para <span className="font-black capitalize">{projectionResult.monthName}</span> estimas gastar <span className="font-black text-slate-900">{formatCLP(projectionResult.expenses)}</span>, ingresar <span className="font-black text-green-700">{formatCLP(projectionResult.income)}</span> y quedar con <span className={`font-black ${projectionResult.balance < 0 ? 'text-red-600' : 'text-emerald-700'}`}>{formatCLP(projectionResult.balance)}</span>.
+                </p>
+
+                <div className="mt-5">
+                  <p className="text-[10px] font-black uppercase text-emerald-700 mb-3">Gastos especiales detectados:</p>
+                  {projectionResult.specialExpenses.length === 0 ? (
+                    <p className="text-sm text-slate-500 font-medium">Sin gastos especiales agregados.</p>
+                  ) : (
+                    <ul className="space-y-2">
+                      {projectionResult.specialExpenses.map(item => (
+                        <li key={item.id} className="flex justify-between gap-3 text-sm">
+                          <span className="text-slate-600 font-bold">{item.type}</span>
+                          <span className="font-black text-slate-800 whitespace-nowrap">{formatCLP(item.amount)}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {showPaymentModal && (
         <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-md z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-[3rem] p-8 w-full max-w-md">
