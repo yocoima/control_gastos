@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
-import { getFirestore, doc, setDoc, onSnapshot, getDoc } from 'firebase/firestore';
+import { getFirestore, doc, setDoc, onSnapshot } from 'firebase/firestore';
 import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signOut } from 'firebase/auth';
 import { 
   ChevronLeft, ChevronRight, Trash2, ReceiptText, ChevronUp, ChevronDown, Eye, EyeOff,
@@ -80,8 +80,6 @@ export default function App() {
   const csvInputRef = useRef(null);
   const getMonthKey = (date) => `${date.getFullYear()}-${(date.getMonth() + 1).toString().padStart(2, '0')}`;
   const monthKey = getMonthKey(currentDate);
-  const projectionDate = new Date();
-  const projectionMonthKey = getMonthKey(projectionDate);
 
   const [sortConfig, setSortConfig] = useState({ key: 'id', direction: 'desc' });
   const [activeTab, setActiveTab] = useState('movimientos');
@@ -143,6 +141,7 @@ export default function App() {
     includesNormalized(item.category, 'tarjeta') ||
     includesNormalized(item.category, 'credito') ||
     PROJECTION_IGNORED_TYPES.some(type => isType(item.type, type));
+  const projectionItemLabel = (item) => item.concept || item.title || item.category || 'Sin detalle';
   const isTCCreditOrPayment = (item) => parseRawNumber(item.amount) < 0;
 
   // --- AUTENTICACIÓN ---
@@ -906,23 +905,15 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
     return getMyPart(item);
   };
 
-  const getPreviousMonthKey = (targetMonthKey) => {
-    const [year, month] = targetMonthKey.split('-').map(Number);
-    return getMonthKey(new Date(year, month - 2, 1));
+  const addProjectionDetail = (acc, group, item, amount) => {
+    acc.details[group].push({
+      id: item.id || `${group}-${acc.details[group].length}`,
+      concept: projectionItemLabel(item),
+      amount,
+      source: item.source || 'Movimiento',
+      category: item.category || ''
+    });
   };
-
-  const fetchMonthlyRecord = async (targetMonthKey) => {
-    if (targetMonthKey === monthKey) return { movements, tcBatches };
-    if (!user) return { movements: [], tcBatches: [] };
-    const snap = await getDoc(doc(db, 'artifacts', APP_COLLECTION_ID, 'users', user.uid, 'monthly_records', targetMonthKey));
-    return snap.exists() ? snap.data() : { movements: [], tcBatches: [] };
-  };
-
-  const getProjectionItemsForMonth = (recordMovements, targetMonthKey) => [
-    ...withSource(recordMovements || [], 'Movimiento'),
-    ...withSource(getActiveInstallmentsForMonth(targetMonthKey), 'Cuota'),
-    ...withSource(getActiveFixedExpensesForMonth(targetMonthKey), 'Fijo')
-  ];
 
   const getProjectionSummary = (items) => items.reduce((acc, item) => {
     if (isCreditCardProjectionItem(item)) return acc;
@@ -936,18 +927,37 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
     if (amount <= 0) return acc;
 
     const category = item.category || '';
-    if (PROJECTION_VARIABLE_CATEGORIES.some(cat => isCategory(category, cat))) {
-      acc.variable += amount;
-      if (isCategory(category, 'Comida')) acc.food += amount;
-      if (isCategory(category, 'Transporte')) acc.transport += amount;
-    } else if (item.source === 'Fijo' || item.source === 'Cuota' || PROJECTION_FIXED_CATEGORIES.some(cat => isCategory(category, cat))) {
+    if (item.source === 'Fijo' || item.source === 'Cuota') {
       acc.fixed += amount;
+      addProjectionDetail(acc, 'fixed', item, amount);
+    } else if (PROJECTION_VARIABLE_CATEGORIES.some(cat => isCategory(category, cat))) {
+      acc.variable += amount;
+      if (isCategory(category, 'Comida')) {
+        acc.food += amount;
+        addProjectionDetail(acc, 'food', item, amount);
+      }
+      if (isCategory(category, 'Transporte')) {
+        acc.transport += amount;
+        addProjectionDetail(acc, 'transport', item, amount);
+      }
+    } else if (PROJECTION_FIXED_CATEGORIES.some(cat => isCategory(category, cat))) {
+      acc.fixed += amount;
+      addProjectionDetail(acc, 'fixed', item, amount);
     } else {
       acc.other += amount;
+      addProjectionDetail(acc, 'other', item, amount);
     }
 
     return acc;
-  }, { income: 0, fixed: 0, variable: 0, food: 0, transport: 0, other: 0 });
+  }, {
+    income: 0,
+    fixed: 0,
+    variable: 0,
+    food: 0,
+    transport: 0,
+    other: 0,
+    details: { fixed: [], food: [], transport: [], other: [] }
+  });
 
   const addProjectionItem = (e) => {
     e.preventDefault();
@@ -968,25 +978,18 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
     setProjectionLoading(true);
     setProjectionError('');
     try {
-      const previousMonthKey = getPreviousMonthKey(projectionMonthKey);
-      const [currentRecord, previousRecord] = await Promise.all([
-        fetchMonthlyRecord(projectionMonthKey),
-        fetchMonthlyRecord(previousMonthKey)
-      ]);
-
-      const currentSummary = getProjectionSummary(getProjectionItemsForMonth(currentRecord.movements || [], projectionMonthKey));
-      const previousSummary = getProjectionSummary(getProjectionItemsForMonth(previousRecord.movements || [], previousMonthKey));
+      const summary = getProjectionSummary(allMovements);
       const specialTotal = projectionItems.reduce((sum, item) => sum + parseRawNumber(item.amount), 0);
 
-      const income = currentSummary.income > 0 ? currentSummary.income : previousSummary.income;
-      const fixed = currentSummary.fixed > 0 ? currentSummary.fixed : previousSummary.fixed;
-      const food = previousSummary.food > 0 ? previousSummary.food : currentSummary.food;
-      const transport = previousSummary.transport > 0 ? previousSummary.transport : currentSummary.transport;
-      const other = previousSummary.other > 0 ? previousSummary.other : currentSummary.other;
+      const income = summary.income;
+      const fixed = summary.fixed;
+      const food = summary.food;
+      const transport = summary.transport;
+      const other = summary.other;
       const expenses = fixed + food + transport + other + specialTotal;
 
       setProjectionResult({
-        monthName: projectionDate.toLocaleString('es-CL', { month: 'long' }),
+        monthName: currentDate.toLocaleString('es-CL', { month: 'long' }),
         income: Math.round(income),
         expenses: Math.round(expenses),
         balance: Math.round(income - expenses),
@@ -996,6 +999,12 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
           transport: Math.round(transport),
           other: Math.round(other),
           special: Math.round(specialTotal)
+        },
+        detailItems: {
+          fixed: summary.details.fixed,
+          food: summary.details.food,
+          transport: summary.details.transport,
+          other: summary.details.other
         },
         specialExpenses: projectionItems.map(item => ({ ...item, amount: parseRawNumber(item.amount) }))
       });
@@ -1901,6 +1910,19 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
                       <span className="text-slate-600 font-bold">Comida</span>
                       <span className="font-black text-slate-800">{formatCLP(projectionResult.breakdown.food)}</span>
                     </div>
+                    {projectionResult.detailItems?.food?.length > 0 && (
+                      <div className="ml-3 pl-3 border-l border-emerald-100 space-y-1.5">
+                        {projectionResult.detailItems.food
+                          .slice()
+                          .sort((a, b) => b.amount - a.amount)
+                          .map(item => (
+                            <div key={`projection_food_${item.id}_${item.concept}`} className="flex justify-between gap-3 text-xs">
+                              <span className="text-slate-500 font-medium truncate">{item.concept}</span>
+                              <span className="font-bold text-slate-600 whitespace-nowrap">{formatCLP(item.amount)}</span>
+                            </div>
+                          ))}
+                      </div>
+                    )}
                     <div className="flex justify-between gap-3">
                       <span className="text-slate-600 font-bold">Transporte</span>
                       <span className="font-black text-slate-800">{formatCLP(projectionResult.breakdown.transport)}</span>
