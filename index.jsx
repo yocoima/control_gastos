@@ -41,7 +41,6 @@ const createDefaultPyramidRent = () => ({
   rentIncome: 0,
   dividendExpense: 0,
   quarterlyAdjustment: 0,
-  availableInBank: 0,
   withdrawals: []
 });
 export default function App() {
@@ -525,9 +524,9 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
   const getPyramidRentWithdrawalsTotal = (record) => (record.withdrawals || []).reduce((sum, item) => sum + parseRawNumber(item.amount), 0);
   const getPyramidRentMonthNet = (record) => {
     const rentIncome = parseRawNumber(record.rentIncome);
-    const dividendExpense = parseRawNumber(record.dividendExpense);
     const quarterlyAdjustment = parseRawNumber(record.quarterlyAdjustment);
-    return rentIncome - getPyramidRentCommission(rentIncome) - dividendExpense - quarterlyAdjustment;
+    const dividendExpense = parseRawNumber(record.dividendExpense);
+    return rentIncome + quarterlyAdjustment - getPyramidRentCommission(rentIncome) - dividendExpense;
   };
 
   const normalizePyramidRentRecord = (record = pyramidRent) => {
@@ -541,7 +540,6 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
         rentIncome: parseRawNumber(rentEntry?.income),
         dividendExpense: parseRawNumber(dividendEntry?.expense),
         quarterlyAdjustment: parseRawNumber(adjustmentEntry?.expense),
-        availableInBank: parseRawNumber(record.utility),
         withdrawals: []
       };
     }
@@ -551,7 +549,6 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
       rentIncome: parseRawNumber(record.rentIncome),
       dividendExpense: parseRawNumber(record.dividendExpense),
       quarterlyAdjustment: parseRawNumber(record.quarterlyAdjustment),
-      availableInBank: parseRawNumber(record.availableInBank),
       withdrawals: (record.withdrawals || []).map(item => ({
         id: item.id || createGeneratedId(),
         detail: item.detail || '',
@@ -1306,11 +1303,10 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
   const liquidezReal = totalBancos - balances.tc_deuda;
   const currentPyramidRentRecord = normalizePyramidRentRecord(pyramidRent);
   const pyramidRentCommission = getPyramidRentCommission(currentPyramidRentRecord.rentIncome);
-  const pyramidRentIncome = parseRawNumber(currentPyramidRentRecord.rentIncome);
-  const pyramidRentExpense = pyramidRentCommission + parseRawNumber(currentPyramidRentRecord.dividendExpense) + parseRawNumber(currentPyramidRentRecord.quarterlyAdjustment);
+  const pyramidRentIncome = parseRawNumber(currentPyramidRentRecord.rentIncome) + parseRawNumber(currentPyramidRentRecord.quarterlyAdjustment);
+  const pyramidRentExpense = pyramidRentCommission + parseRawNumber(currentPyramidRentRecord.dividendExpense);
   const pyramidRentNet = getPyramidRentMonthNet(currentPyramidRentRecord);
   const pyramidRentWithdrawalsTotal = getPyramidRentWithdrawalsTotal(currentPyramidRentRecord);
-  const pyramidRentMonthEndUtility = pyramidRentNet - pyramidRentWithdrawalsTotal;
   const pyramidRentRecordsByMonth = {
     ...pyramidRentHistory,
     [monthKey]: currentPyramidRentRecord
@@ -1762,7 +1758,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
               </div>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3">
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
               <div className="bg-white p-5 rounded-[2rem] border border-slate-200 shadow-sm">
                 <p className="text-[10px] text-green-600 font-black uppercase mb-1">Ingreso Arriendo</p>
                 <p className="text-2xl font-black text-green-700">{formatCLP(pyramidRentIncome)}</p>
@@ -1776,22 +1772,9 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
                 <p className={`text-2xl font-black ${pyramidRentNet < 0 ? 'text-red-600' : 'text-emerald-700'}`}>{formatCLP(pyramidRentNet)}</p>
               </div>
               <div className="bg-white p-5 rounded-[2rem] border border-blue-100 shadow-sm">
-                <p className="text-[10px] text-blue-600 font-black uppercase mb-1">Utilidad en Banco</p>
+                <p className="text-[10px] text-blue-600 font-black uppercase mb-1">Utilidad</p>
                 <p className="text-2xl font-black text-blue-700">{formatCLP(pyramidRentAccumulatedUtility)}</p>
                 <p className="text-[10px] text-slate-400 font-medium mt-1">Acumulada hasta este mes, descontando retiros.</p>
-              </div>
-              <div className="bg-white p-5 rounded-[2rem] border border-amber-100 shadow-sm">
-                <label className="text-[10px] text-amber-600 font-black uppercase block mb-1">Disponible Actual Banco</label>
-                <input
-                  type="text"
-                  value={formatInputNumber(currentPyramidRentRecord.availableInBank)}
-                  onChange={e => handlePyramidRentFieldChange('availableInBank', e.target.value)}
-                  onBlur={e => updatePyramidRentField('availableInBank', e.target.value)}
-                  className="w-full font-black text-2xl text-amber-700 outline-none bg-transparent"
-                  inputMode="numeric"
-                  placeholder="0"
-                />
-                <p className="text-[10px] text-slate-400 font-medium mt-1">Saldo real que ves hoy en el banco.</p>
               </div>
             </div>
 
@@ -1854,9 +1837,8 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
                     <tr className="hover:bg-slate-50/80">
                       <td className="px-6 py-4">
                         <p className="font-bold text-slate-800">ajuste trimestral</p>
-                        <p className="text-[10px] text-slate-400 font-medium">Ingresa el monto solo cuando corresponda aplicar el ajuste.</p>
+                        <p className="text-[10px] text-slate-400 font-medium">Ingresa el monto solo cuando corresponda aplicar el ajuste. Cuenta como ingreso.</p>
                       </td>
-                      <td className="px-6 py-4 text-right font-medium text-slate-300">{formatCLP(0)}</td>
                       <td className="px-6 py-4">
                         <input
                           type="text"
@@ -1864,10 +1846,11 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
                           value={formatInputNumber(currentPyramidRentRecord.quarterlyAdjustment)}
                           onChange={e => handlePyramidRentFieldChange('quarterlyAdjustment', e.target.value)}
                           onBlur={e => updatePyramidRentField('quarterlyAdjustment', e.target.value)}
-                          className="w-full bg-transparent border-2 border-transparent focus:border-rose-200 rounded-xl px-3 py-2 font-medium text-right outline-none text-rose-600"
+                          className="w-full bg-transparent border-2 border-transparent focus:border-green-200 rounded-xl px-3 py-2 font-medium text-right outline-none text-green-700"
                           placeholder="0"
                         />
                       </td>
+                      <td className="px-6 py-4 text-right font-medium text-slate-300">{formatCLP(0)}</td>
                     </tr>
                   </tbody>
                   <tfoot>
@@ -1948,13 +1931,6 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
                     <tr className="bg-amber-50/70 border-t border-amber-100">
                       <td className="px-6 py-4 font-black text-slate-800 uppercase text-xs">Retiros del mes</td>
                       <td className="px-6 py-4 text-right font-black text-amber-700">{formatCLP(pyramidRentWithdrawalsTotal)}</td>
-                      <td></td>
-                    </tr>
-                    <tr className={`${pyramidRentMonthEndUtility < 0 ? 'bg-red-50/70 border-t border-red-100' : 'bg-emerald-50/70 border-t border-emerald-100'}`}>
-                      <td className="px-6 py-4 font-black text-slate-800 uppercase text-xs">Cierre del mes</td>
-                      <td className={`px-6 py-4 text-right font-black text-lg ${pyramidRentMonthEndUtility < 0 ? 'text-red-700' : 'text-emerald-700'}`}>
-                        {formatCLP(pyramidRentMonthEndUtility)}
-                      </td>
                       <td></td>
                     </tr>
                   </tfoot>
