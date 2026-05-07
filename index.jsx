@@ -39,11 +39,10 @@ const createEmptyPyramidRentWithdrawal = () => ({
   detail: '',
   amount: 0
 });
-const createDefaultPyramidRent = (targetMonthKey = null) => ({
+const createDefaultPyramidRent = () => ({
   rentIncome: 0,
   dividendExpense: 0,
   quarterlyAdjustment: 0,
-  openingBankBalance: targetMonthKey === PYRAMID_RENT_INITIAL_BANK_MONTH_KEY ? PYRAMID_RENT_INITIAL_BANK_BALANCE : 0,
   withdrawals: []
 });
 export default function App() {
@@ -78,7 +77,7 @@ export default function App() {
   const [editingProjectionItemId, setEditingProjectionItemId] = useState(null);
   const [editingProjectionItemData, setEditingProjectionItemData] = useState({ type: '', amount: '' });
   const [evidence, setEvidence] = useState([]);
-  const [pyramidRent, setPyramidRent] = useState(() => createDefaultPyramidRent(getMonthKeyFromDate(new Date())));
+  const [pyramidRent, setPyramidRent] = useState(() => createDefaultPyramidRent());
   const [pyramidRentHistory, setPyramidRentHistory] = useState({});
   const [showEvidence, setShowEvidence] = useState(false);
   const [evidenceViewer, setEvidenceViewer] = useState(null);
@@ -532,8 +531,8 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
     return rentIncome + quarterlyAdjustment - getPyramidRentCommission(rentIncome) - dividendExpense;
   };
 
-  const normalizePyramidRentRecord = (record = pyramidRent, targetMonthKey = monthKey) => {
-    const defaults = createDefaultPyramidRent(targetMonthKey);
+  const normalizePyramidRentRecord = (record = pyramidRent) => {
+    const defaults = createDefaultPyramidRent();
     if (record.entries) {
       const rentEntry = record.entries.find(item => includesNormalized(item.detail, 'arriendo')) || record.entries.find(item => parseRawNumber(item.income) > 0);
       const dividendEntry = record.entries.find(item => includesNormalized(item.detail, 'dividendo'));
@@ -543,7 +542,6 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
         rentIncome: parseRawNumber(rentEntry?.income),
         dividendExpense: parseRawNumber(dividendEntry?.expense),
         quarterlyAdjustment: parseRawNumber(adjustmentEntry?.expense),
-        openingBankBalance: parseRawNumber(record.openingBankBalance ?? defaults.openingBankBalance),
         withdrawals: []
       };
     }
@@ -553,7 +551,6 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
       rentIncome: parseRawNumber(record.rentIncome),
       dividendExpense: parseRawNumber(record.dividendExpense),
       quarterlyAdjustment: parseRawNumber(record.quarterlyAdjustment),
-      openingBankBalance: parseRawNumber(record.openingBankBalance ?? defaults.openingBankBalance),
       withdrawals: (record.withdrawals || []).map(item => ({
         id: item.id || createGeneratedId(),
         detail: item.detail || '',
@@ -574,7 +571,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
         setBalances(data.balances || { itau: 0, scotia: 0, edenred: 0, tc_deuda: 0 });
         setTcBatches(data.tcBatches || []);
         setEvidence(data.evidence || []);
-        setPyramidRent(normalizePyramidRentRecord(data.pyramidRent || {}, monthKey));
+        setPyramidRent(normalizePyramidRentRecord(data.pyramidRent || {}));
         setProjectionItems((data.projection?.items || []).map(item => ({ ...item, amount: parseRawNumber(item.amount) })));
         setProjectionResult(data.projection?.result || null);
       } else {
@@ -582,7 +579,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
         setBalances({ itau: 0, scotia: 0, edenred: 0, tc_deuda: 0 });
         setTcBatches([]);
         setEvidence([]);
-        setPyramidRent(createDefaultPyramidRent(monthKey));
+        setPyramidRent(createDefaultPyramidRent());
         setProjectionItems([]);
         setProjectionResult(null);
       }
@@ -600,7 +597,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
     const unsubscribe = onSnapshot(recordsRef, (snap) => {
       const nextHistory = {};
       snap.forEach(docSnap => {
-        nextHistory[docSnap.id] = normalizePyramidRentRecord(docSnap.data().pyramidRent || {}, docSnap.id);
+        nextHistory[docSnap.id] = normalizePyramidRentRecord(docSnap.data().pyramidRent || {});
       });
       setPyramidRentHistory(nextHistory);
     });
@@ -1318,19 +1315,22 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
   };
   const pyramidRentSortedMonthKeys = Object.keys(pyramidRentRecordsByMonth)
     .filter(key => /^\d{4}-\d{2}$/.test(key))
+    .filter(key => key >= PYRAMID_RENT_INITIAL_BANK_MONTH_KEY && key <= monthKey)
     .sort();
-  let runningPyramidUtility = 0;
+  let runningPyramidUtility = monthKey >= PYRAMID_RENT_INITIAL_BANK_MONTH_KEY ? PYRAMID_RENT_INITIAL_BANK_BALANCE : 0;
   const pyramidUtilityByMonth = {};
   let lastAdjustmentMonthKey = null;
   pyramidRentSortedMonthKeys.forEach(key => {
-    const record = normalizePyramidRentRecord(pyramidRentRecordsByMonth[key] || {}, key);
-    runningPyramidUtility += parseRawNumber(record.openingBankBalance) + getPyramidRentMonthNet(record) - getPyramidRentWithdrawalsTotal(record);
+    const record = normalizePyramidRentRecord(pyramidRentRecordsByMonth[key] || {});
+    runningPyramidUtility += getPyramidRentMonthNet(record) - getPyramidRentWithdrawalsTotal(record);
     pyramidUtilityByMonth[key] = runningPyramidUtility;
     if (parseRawNumber(record.quarterlyAdjustment) > 0) {
       lastAdjustmentMonthKey = key;
     }
   });
-  const pyramidRentAccumulatedUtility = pyramidUtilityByMonth[monthKey] || 0;
+  const pyramidRentAccumulatedUtility = monthKey >= PYRAMID_RENT_INITIAL_BANK_MONTH_KEY
+    ? (pyramidUtilityByMonth[monthKey] ?? PYRAMID_RENT_INITIAL_BANK_BALANCE)
+    : 0;
   const monthsSinceAdjustment = lastAdjustmentMonthKey
     ? ((dateFromMonthKey(monthKey).getFullYear() - dateFromMonthKey(lastAdjustmentMonthKey).getFullYear()) * 12)
       + (dateFromMonthKey(monthKey).getMonth() - dateFromMonthKey(lastAdjustmentMonthKey).getMonth())
