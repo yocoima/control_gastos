@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
-import { getFirestore, doc, setDoc, onSnapshot } from 'firebase/firestore';
+import { getFirestore, doc, setDoc, onSnapshot, collection } from 'firebase/firestore';
 import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signOut } from 'firebase/auth';
 import { 
   ChevronLeft, ChevronRight, Trash2, ReceiptText, ChevronUp, ChevronDown, Eye, EyeOff,
@@ -25,11 +25,24 @@ const auth = getAuth(app);
 const db = getFirestore(app);
 const APP_COLLECTION_ID = 'gastos-chile-v2'; // Este es el ID de la colección principal para tus datos
 const GROQ_API_KEY = import.meta.env.VITE_GROQ_API_KEY;
-const createEmptyPyramidRentEntry = () => ({
-  id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+const createGeneratedId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+const getMonthKeyFromDate = (date) => `${date.getFullYear()}-${(date.getMonth() + 1).toString().padStart(2, '0')}`;
+const dateFromMonthKey = (key) => {
+  const [year, month] = key.split('-').map(Number);
+  return new Date(year, (month || 1) - 1, 1);
+};
+const getMonthName = (date) => date.toLocaleString('es-CL', { month: 'long' }).toLowerCase();
+const createEmptyPyramidRentWithdrawal = () => ({
+  id: createGeneratedId(),
   detail: '',
-  income: 0,
-  expense: 0
+  amount: 0
+});
+const createDefaultPyramidRent = () => ({
+  rentIncome: 0,
+  dividendExpense: 0,
+  quarterlyAdjustment: 0,
+  availableInBank: 0,
+  withdrawals: []
 });
 export default function App() {
   const [user, setUser] = useState(null);
@@ -63,7 +76,8 @@ export default function App() {
   const [editingProjectionItemId, setEditingProjectionItemId] = useState(null);
   const [editingProjectionItemData, setEditingProjectionItemData] = useState({ type: '', amount: '' });
   const [evidence, setEvidence] = useState([]);
-  const [pyramidRent, setPyramidRent] = useState({ entries: [createEmptyPyramidRentEntry()], utility: 0 });
+  const [pyramidRent, setPyramidRent] = useState(() => createDefaultPyramidRent());
+  const [pyramidRentHistory, setPyramidRentHistory] = useState({});
   const [showEvidence, setShowEvidence] = useState(false);
   const [evidenceViewer, setEvidenceViewer] = useState(null);
   const [editingFixedId, setEditingFixedId] = useState(null);
@@ -87,8 +101,11 @@ export default function App() {
   const camInputRef = useRef(null);
   const galleryInputRef = useRef(null);
   const csvInputRef = useRef(null);
-  const getMonthKey = (date) => `${date.getFullYear()}-${(date.getMonth() + 1).toString().padStart(2, '0')}`;
+  const getMonthKey = (date) => getMonthKeyFromDate(date);
   const monthKey = getMonthKey(currentDate);
+  const changeMonth = (offset) => {
+    setCurrentDate(prev => new Date(prev.getFullYear(), prev.getMonth() + offset, 1));
+  };
 
   const [sortConfig, setSortConfig] = useState({ key: 'id', direction: 'desc' });
   const [activeTab, setActiveTab] = useState('movimientos');
@@ -504,6 +521,45 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
   const activeFixedExpenses = getActiveFixedExpensesForMonth(monthKey);
   const activeInstallments = getActiveInstallmentsForMonth(monthKey);
 
+  const getPyramidRentCommission = (income) => Math.round(parseRawNumber(income) * 0.06 * 1.19);
+  const getPyramidRentWithdrawalsTotal = (record) => (record.withdrawals || []).reduce((sum, item) => sum + parseRawNumber(item.amount), 0);
+  const getPyramidRentMonthNet = (record) => {
+    const rentIncome = parseRawNumber(record.rentIncome);
+    const dividendExpense = parseRawNumber(record.dividendExpense);
+    const quarterlyAdjustment = parseRawNumber(record.quarterlyAdjustment);
+    return rentIncome - getPyramidRentCommission(rentIncome) - dividendExpense - quarterlyAdjustment;
+  };
+
+  const normalizePyramidRentRecord = (record = pyramidRent) => {
+    const defaults = createDefaultPyramidRent();
+    if (record.entries) {
+      const rentEntry = record.entries.find(item => includesNormalized(item.detail, 'arriendo')) || record.entries.find(item => parseRawNumber(item.income) > 0);
+      const dividendEntry = record.entries.find(item => includesNormalized(item.detail, 'dividendo'));
+      const adjustmentEntry = record.entries.find(item => includesNormalized(item.detail, 'ajuste'));
+      return {
+        ...defaults,
+        rentIncome: parseRawNumber(rentEntry?.income),
+        dividendExpense: parseRawNumber(dividendEntry?.expense),
+        quarterlyAdjustment: parseRawNumber(adjustmentEntry?.expense),
+        availableInBank: parseRawNumber(record.utility),
+        withdrawals: []
+      };
+    }
+
+    return {
+      ...defaults,
+      rentIncome: parseRawNumber(record.rentIncome),
+      dividendExpense: parseRawNumber(record.dividendExpense),
+      quarterlyAdjustment: parseRawNumber(record.quarterlyAdjustment),
+      availableInBank: parseRawNumber(record.availableInBank),
+      withdrawals: (record.withdrawals || []).map(item => ({
+        id: item.id || createGeneratedId(),
+        detail: item.detail || '',
+        amount: parseRawNumber(item.amount)
+      }))
+    };
+  };
+
   // --- CARGA DE DATOS ---
   useEffect(() => {
     if (!user || loading) return;
@@ -516,15 +572,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
         setBalances(data.balances || { itau: 0, scotia: 0, edenred: 0, tc_deuda: 0 });
         setTcBatches(data.tcBatches || []);
         setEvidence(data.evidence || []);
-        setPyramidRent({
-          entries: (data.pyramidRent?.entries || [createEmptyPyramidRentEntry()]).map(item => ({
-            id: item.id || createEmptyPyramidRentEntry().id,
-            detail: item.detail || '',
-            income: parseRawNumber(item.income),
-            expense: parseRawNumber(item.expense)
-          })),
-          utility: parseRawNumber(data.pyramidRent?.utility)
-        });
+        setPyramidRent(normalizePyramidRentRecord(data.pyramidRent || {}));
         setProjectionItems((data.projection?.items || []).map(item => ({ ...item, amount: parseRawNumber(item.amount) })));
         setProjectionResult(data.projection?.result || null);
       } else {
@@ -532,7 +580,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
         setBalances({ itau: 0, scotia: 0, edenred: 0, tc_deuda: 0 });
         setTcBatches([]);
         setEvidence([]);
-        setPyramidRent({ entries: [createEmptyPyramidRentEntry()], utility: 0 });
+        setPyramidRent(createDefaultPyramidRent());
         setProjectionItems([]);
         setProjectionResult(null);
       }
@@ -542,22 +590,25 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
       setLoading(false);
     }, (err) => setLoading(false));
     return () => unsubscribe();
+  }, [user]);
+
+  useEffect(() => {
+    if (!user) return;
+    const recordsRef = collection(db, 'artifacts', APP_COLLECTION_ID, 'users', user.uid, 'monthly_records');
+    const unsubscribe = onSnapshot(recordsRef, (snap) => {
+      const nextHistory = {};
+      snap.forEach(docSnap => {
+        nextHistory[docSnap.id] = normalizePyramidRentRecord(docSnap.data().pyramidRent || {});
+      });
+      setPyramidRentHistory(nextHistory);
+    });
+    return () => unsubscribe();
   }, [user, monthKey]);
 
   const normalizeProjectionRecord = (projection = {}) => ({
     items: (projection.items || []).map(item => ({ ...item, amount: parseRawNumber(item.amount) })),
     result: projection.result || null,
     updatedAt: projection.updatedAt || new Date().toISOString()
-  });
-
-  const normalizePyramidRentRecord = (record = pyramidRent) => ({
-    entries: (record.entries || []).map(item => ({
-      id: item.id || createEmptyPyramidRentEntry().id,
-      detail: item.detail || '',
-      income: parseRawNumber(item.income),
-      expense: parseRawNumber(item.expense)
-    })),
-    utility: parseRawNumber(record.utility)
   });
 
   const saveToCloud = async (
@@ -575,7 +626,10 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
         balances: newBals,
         tcBatches: newBatches,
         evidence: newEvidence,
-        pyramidRent: normalizePyramidRentRecord(newPyramidRent),
+        pyramidRent: {
+          ...normalizePyramidRentRecord(newPyramidRent),
+          updatedAt: new Date().toISOString()
+        },
         projection: normalizeProjectionRecord(newProjection),
         updatedAt: new Date().toISOString()
       });
@@ -1018,40 +1072,57 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
     }, pyramidRent);
   };
 
-  const updatePyramidRentEntries = async (updater) => {
-    const nextEntries = typeof updater === 'function' ? updater(pyramidRent.entries) : updater;
-    const nextRecord = { ...pyramidRent, entries: nextEntries };
-    setPyramidRent(nextRecord);
-    await saveToCloud(movements, balances, tcBatches, evidence, { items: projectionItems, result: projectionResult }, nextRecord);
+  const savePyramidRentRecord = async (nextRecord) => {
+    await saveToCloud(
+      movements,
+      balances,
+      tcBatches,
+      evidence,
+      { items: projectionItems, result: projectionResult },
+      nextRecord
+    );
   };
 
-  const updatePyramidRentUtility = async (value) => {
-    const nextRecord = { ...pyramidRent, utility: parseRawNumber(value) };
+  const updatePyramidRentRecord = async (updater) => {
+    const nextRecord = typeof updater === 'function' ? updater(pyramidRent) : updater;
     setPyramidRent(nextRecord);
-    await saveToCloud(movements, balances, tcBatches, evidence, { items: projectionItems, result: projectionResult }, nextRecord);
+    await savePyramidRentRecord(nextRecord);
   };
 
-  const handlePyramidRentEntryChange = (id, field, value) => {
+  const updatePyramidRentField = async (field, value) => {
+    const nextRecord = { ...pyramidRent, [field]: parseRawNumber(value) };
+    setPyramidRent(nextRecord);
+    await savePyramidRentRecord(nextRecord);
+  };
+
+  const handlePyramidRentFieldChange = (field, value) => {
+    setPyramidRent(prev => ({ ...prev, [field]: parseRawNumber(value) }));
+  };
+
+  const handlePyramidRentWithdrawalChange = (id, field, value) => {
     const normalizedValue = field === 'detail' ? value : parseRawNumber(value);
     setPyramidRent(prev => ({
       ...prev,
-      entries: prev.entries.map(entry => entry.id === id ? { ...entry, [field]: normalizedValue } : entry)
+      withdrawals: prev.withdrawals.map(item => item.id === id ? { ...item, [field]: normalizedValue } : item)
     }));
   };
 
-  const savePyramidRentEntries = async () => {
-    await saveToCloud(movements, balances, tcBatches, evidence, { items: projectionItems, result: projectionResult }, pyramidRent);
+  const savePyramidRent = async () => {
+    await savePyramidRentRecord(pyramidRent);
   };
 
-  const addPyramidRentEntry = async () => {
-    await updatePyramidRentEntries(prev => [...prev, createEmptyPyramidRentEntry()]);
+  const addPyramidRentWithdrawal = async () => {
+    await updatePyramidRentRecord(prev => ({
+      ...prev,
+      withdrawals: [...prev.withdrawals, createEmptyPyramidRentWithdrawal()]
+    }));
   };
 
-  const deletePyramidRentEntry = async (id) => {
-    await updatePyramidRentEntries(prev => {
-      const remaining = prev.filter(entry => entry.id !== id);
-      return remaining.length > 0 ? remaining : [createEmptyPyramidRentEntry()];
-    });
+  const deletePyramidRentWithdrawal = async (id) => {
+    await updatePyramidRentRecord(prev => ({
+      ...prev,
+      withdrawals: prev.withdrawals.filter(item => item.id !== id)
+    }));
   };
 
   const addProjectionItem = async (e) => {
@@ -1233,9 +1304,39 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
 
   const totalBancos = balances.itau + balances.scotia;
   const liquidezReal = totalBancos - balances.tc_deuda;
-  const pyramidRentIncome = pyramidRent.entries.reduce((sum, item) => sum + parseRawNumber(item.income), 0);
-  const pyramidRentExpense = pyramidRent.entries.reduce((sum, item) => sum + parseRawNumber(item.expense), 0);
-  const pyramidRentNet = pyramidRentIncome - pyramidRentExpense;
+  const currentPyramidRentRecord = normalizePyramidRentRecord(pyramidRent);
+  const pyramidRentCommission = getPyramidRentCommission(currentPyramidRentRecord.rentIncome);
+  const pyramidRentIncome = parseRawNumber(currentPyramidRentRecord.rentIncome);
+  const pyramidRentExpense = pyramidRentCommission + parseRawNumber(currentPyramidRentRecord.dividendExpense) + parseRawNumber(currentPyramidRentRecord.quarterlyAdjustment);
+  const pyramidRentNet = getPyramidRentMonthNet(currentPyramidRentRecord);
+  const pyramidRentWithdrawalsTotal = getPyramidRentWithdrawalsTotal(currentPyramidRentRecord);
+  const pyramidRentMonthEndUtility = pyramidRentNet - pyramidRentWithdrawalsTotal;
+  const pyramidRentRecordsByMonth = {
+    ...pyramidRentHistory,
+    [monthKey]: currentPyramidRentRecord
+  };
+  const pyramidRentSortedMonthKeys = Object.keys(pyramidRentRecordsByMonth)
+    .filter(key => /^\d{4}-\d{2}$/.test(key))
+    .sort();
+  let runningPyramidUtility = 0;
+  const pyramidUtilityByMonth = {};
+  let lastAdjustmentMonthKey = null;
+  pyramidRentSortedMonthKeys.forEach(key => {
+    const record = normalizePyramidRentRecord(pyramidRentRecordsByMonth[key] || {});
+    runningPyramidUtility += getPyramidRentMonthNet(record) - getPyramidRentWithdrawalsTotal(record);
+    pyramidUtilityByMonth[key] = runningPyramidUtility;
+    if (parseRawNumber(record.quarterlyAdjustment) > 0) {
+      lastAdjustmentMonthKey = key;
+    }
+  });
+  const pyramidRentAccumulatedUtility = pyramidUtilityByMonth[monthKey] || 0;
+  const monthsSinceAdjustment = lastAdjustmentMonthKey
+    ? ((dateFromMonthKey(monthKey).getFullYear() - dateFromMonthKey(lastAdjustmentMonthKey).getFullYear()) * 12)
+      + (dateFromMonthKey(monthKey).getMonth() - dateFromMonthKey(lastAdjustmentMonthKey).getMonth())
+    : null;
+  const pyramidRentNeedsAdjustmentReminder = monthsSinceAdjustment !== null && monthsSinceAdjustment >= 3 && parseRawNumber(currentPyramidRentRecord.quarterlyAdjustment) === 0;
+  const pyramidRentMonthLabel = currentDate.toLocaleString('es-CL', { month: 'long', year: 'numeric' });
+  const pyramidRentRentLabel = `arriendo ${getMonthName(currentDate)}`;
 
   if (loading) return (
     <div className="h-screen flex flex-col items-center justify-center bg-slate-50">
@@ -1288,12 +1389,12 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
             </button>
           </div>
           <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-2xl border border-slate-200">
-            <button onClick={() => setCurrentDate(new Date(currentDate.setMonth(currentDate.getMonth() - 1)))} className="p-2 hover:bg-white rounded-xl transition-all"><ChevronLeft size={20}/></button>
+            <button onClick={() => changeMonth(-1)} className="p-2 hover:bg-white rounded-xl transition-all"><ChevronLeft size={20}/></button>
             <div className="px-4 py-1 flex flex-col items-center min-w-[130px]">
               <span className="text-[9px] font-black uppercase text-slate-400 tracking-widest text-center">Periodo</span>
               <span className="text-sm font-bold capitalize">{currentDate.toLocaleString('es-CL', { month: 'long', year: 'numeric' })}</span>
             </div>
-            <button onClick={() => setCurrentDate(new Date(currentDate.setMonth(currentDate.getMonth() + 1)))} className="p-2 hover:bg-white rounded-xl transition-all"><ChevronRight size={20}/></button>
+            <button onClick={() => changeMonth(1)} className="p-2 hover:bg-white rounded-xl transition-all"><ChevronRight size={20}/></button>
           </div>
         </div>
       </header>
@@ -1643,7 +1744,25 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
 
         {activeTab === 'arriendo-piramide' && (
           <div className="space-y-6">
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+            <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+              <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-2xl border border-slate-200 w-fit">
+                <button onClick={() => changeMonth(-1)} className="p-2 hover:bg-white rounded-xl transition-all"><ChevronLeft size={18}/></button>
+                <div className="px-4 py-1 flex flex-col items-center min-w-[160px]">
+                  <span className="text-[9px] font-black uppercase text-slate-400 tracking-widest text-center">Mes Arriendo</span>
+                  <span className="text-sm font-bold capitalize">{pyramidRentMonthLabel}</span>
+                </div>
+                <button onClick={() => changeMonth(1)} className="p-2 hover:bg-white rounded-xl transition-all"><ChevronRight size={18}/></button>
+              </div>
+              <div className={`rounded-[1.5rem] border px-4 py-3 text-sm font-medium ${pyramidRentNeedsAdjustmentReminder ? 'bg-amber-50 border-amber-200 text-amber-800' : 'bg-slate-50 border-slate-200 text-slate-500'}`}>
+                {pyramidRentNeedsAdjustmentReminder
+                  ? `Recordatorio: ya pasaron ${monthsSinceAdjustment} meses desde el ultimo ajuste trimestral.`
+                  : lastAdjustmentMonthKey
+                    ? `Ultimo ajuste registrado: ${dateFromMonthKey(lastAdjustmentMonthKey).toLocaleString('es-CL', { month: 'long', year: 'numeric' })}.`
+                    : 'Aun no hay un ajuste trimestral registrado.'}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3">
               <div className="bg-white p-5 rounded-[2rem] border border-slate-200 shadow-sm">
                 <p className="text-[10px] text-green-600 font-black uppercase mb-1">Ingreso Arriendo</p>
                 <p className="text-2xl font-black text-green-700">{formatCLP(pyramidRentIncome)}</p>
@@ -1656,29 +1775,32 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
                 <p className={`text-[10px] font-black uppercase mb-1 ${pyramidRentNet < 0 ? 'text-red-500' : 'text-emerald-600'}`}>Total Mes</p>
                 <p className={`text-2xl font-black ${pyramidRentNet < 0 ? 'text-red-600' : 'text-emerald-700'}`}>{formatCLP(pyramidRentNet)}</p>
               </div>
+              <div className="bg-white p-5 rounded-[2rem] border border-blue-100 shadow-sm">
+                <p className="text-[10px] text-blue-600 font-black uppercase mb-1">Utilidad en Banco</p>
+                <p className="text-2xl font-black text-blue-700">{formatCLP(pyramidRentAccumulatedUtility)}</p>
+                <p className="text-[10px] text-slate-400 font-medium mt-1">Acumulada hasta este mes, descontando retiros.</p>
+              </div>
               <div className="bg-white p-5 rounded-[2rem] border border-amber-100 shadow-sm">
-                <label className="text-[10px] text-amber-600 font-black uppercase block mb-1">Utilidad en Banco</label>
+                <label className="text-[10px] text-amber-600 font-black uppercase block mb-1">Disponible Actual Banco</label>
                 <input
                   type="text"
-                  value={formatInputNumber(pyramidRent.utility)}
-                  onChange={e => setPyramidRent(prev => ({ ...prev, utility: parseRawNumber(e.target.value) }))}
-                  onBlur={e => updatePyramidRentUtility(e.target.value)}
+                  value={formatInputNumber(currentPyramidRentRecord.availableInBank)}
+                  onChange={e => handlePyramidRentFieldChange('availableInBank', e.target.value)}
+                  onBlur={e => updatePyramidRentField('availableInBank', e.target.value)}
                   className="w-full font-black text-2xl text-amber-700 outline-none bg-transparent"
                   inputMode="numeric"
                   placeholder="0"
                 />
+                <p className="text-[10px] text-slate-400 font-medium mt-1">Saldo real que ves hoy en el banco.</p>
               </div>
             </div>
 
             <div className="bg-white rounded-[2.5rem] border border-slate-200 shadow-sm overflow-hidden">
-              <div className="px-6 py-5 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+              <div className="px-6 py-5 border-b border-slate-100">
                 <div>
                   <h3 className="font-black text-slate-800">Control mensual de arriendo</h3>
-                  <p className="text-xs text-slate-400 font-medium">Registra ingresos y egresos de Piramide para {currentDate.toLocaleString('es-CL', { month: 'long', year: 'numeric' })}.</p>
+                  <p className="text-xs text-slate-400 font-medium">Registra ingresos y egresos de Piramide para {pyramidRentMonthLabel}. Los honorarios se calculan automatico como 6% + IVA sobre el arriendo.</p>
                 </div>
-                <button onClick={addPyramidRentEntry} className="px-4 py-3 bg-slate-900 text-white rounded-2xl text-[10px] font-black uppercase hover:bg-slate-700 transition-all flex items-center gap-2 w-fit">
-                  <Plus size={14}/> Agregar fila
-                </button>
               </div>
 
               <div className="overflow-x-auto">
@@ -1688,46 +1810,134 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
                       <th className="px-6 py-4 text-left">Detalle</th>
                       <th className="px-6 py-4 text-right">Ingreso</th>
                       <th className="px-6 py-4 text-right">Egreso</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    <tr className="hover:bg-slate-50/80">
+                      <td className="px-6 py-4 font-bold text-slate-800 capitalize">{pyramidRentRentLabel}</td>
+                      <td className="px-6 py-4">
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          value={formatInputNumber(currentPyramidRentRecord.rentIncome)}
+                          onChange={e => handlePyramidRentFieldChange('rentIncome', e.target.value)}
+                          onBlur={e => updatePyramidRentField('rentIncome', e.target.value)}
+                          className="w-full bg-transparent border-2 border-transparent focus:border-green-200 rounded-xl px-3 py-2 font-medium text-right outline-none text-green-700"
+                          placeholder="0"
+                        />
+                      </td>
+                      <td className="px-6 py-4 text-right font-medium text-slate-300">{formatCLP(0)}</td>
+                    </tr>
+                    <tr className="hover:bg-slate-50/80">
+                      <td className="px-6 py-4">
+                        <p className="font-bold text-slate-800">honorarios 6% + iva</p>
+                        <p className="text-[10px] text-slate-400 font-medium">Calculado sobre el ingreso de arriendo del mes.</p>
+                      </td>
+                      <td className="px-6 py-4 text-right font-medium text-slate-300">{formatCLP(0)}</td>
+                      <td className="px-6 py-4 text-right font-black text-rose-600">{formatCLP(pyramidRentCommission)}</td>
+                    </tr>
+                    <tr className="hover:bg-slate-50/80">
+                      <td className="px-6 py-4 font-bold text-slate-800">pago dividendo</td>
+                      <td className="px-6 py-4 text-right font-medium text-slate-300">{formatCLP(0)}</td>
+                      <td className="px-6 py-4">
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          value={formatInputNumber(currentPyramidRentRecord.dividendExpense)}
+                          onChange={e => handlePyramidRentFieldChange('dividendExpense', e.target.value)}
+                          onBlur={e => updatePyramidRentField('dividendExpense', e.target.value)}
+                          className="w-full bg-transparent border-2 border-transparent focus:border-rose-200 rounded-xl px-3 py-2 font-medium text-right outline-none text-rose-600"
+                          placeholder="0"
+                        />
+                      </td>
+                    </tr>
+                    <tr className="hover:bg-slate-50/80">
+                      <td className="px-6 py-4">
+                        <p className="font-bold text-slate-800">ajuste trimestral</p>
+                        <p className="text-[10px] text-slate-400 font-medium">Ingresa el monto solo cuando corresponda aplicar el ajuste.</p>
+                      </td>
+                      <td className="px-6 py-4 text-right font-medium text-slate-300">{formatCLP(0)}</td>
+                      <td className="px-6 py-4">
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          value={formatInputNumber(currentPyramidRentRecord.quarterlyAdjustment)}
+                          onChange={e => handlePyramidRentFieldChange('quarterlyAdjustment', e.target.value)}
+                          onBlur={e => updatePyramidRentField('quarterlyAdjustment', e.target.value)}
+                          className="w-full bg-transparent border-2 border-transparent focus:border-rose-200 rounded-xl px-3 py-2 font-medium text-right outline-none text-rose-600"
+                          placeholder="0"
+                        />
+                      </td>
+                    </tr>
+                  </tbody>
+                  <tfoot>
+                    <tr className="bg-blue-50/70 border-t border-blue-100">
+                      <td className="px-6 py-4 font-black text-slate-800 uppercase text-xs">Sub total</td>
+                      <td className="px-6 py-4 text-right font-black text-blue-700">{formatCLP(pyramidRentIncome)}</td>
+                      <td className="px-6 py-4 text-right font-black text-blue-700">{formatCLP(pyramidRentExpense)}</td>
+                    </tr>
+                    <tr className={`${pyramidRentNet < 0 ? 'bg-red-50/70 border-t border-red-100' : 'bg-emerald-50/70 border-t border-emerald-100'}`}>
+                      <td className="px-6 py-4 font-black text-slate-800 uppercase text-xs">Total</td>
+                      <td colSpan="2" className={`px-6 py-4 text-right font-black text-lg ${pyramidRentNet < 0 ? 'text-red-700' : 'text-emerald-700'}`}>
+                        {formatCLP(pyramidRentNet)}
+                      </td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            </div>
+
+            <div className="bg-white rounded-[2.5rem] border border-slate-200 shadow-sm overflow-hidden">
+              <div className="px-6 py-5 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                <div>
+                  <h3 className="font-black text-slate-800">Retiros de utilidad</h3>
+                  <p className="text-xs text-slate-400 font-medium">Cada retiro descuenta la utilidad acumulada de este mes.</p>
+                </div>
+                <button onClick={addPyramidRentWithdrawal} className="px-4 py-3 bg-slate-900 text-white rounded-2xl text-[10px] font-black uppercase hover:bg-slate-700 transition-all flex items-center gap-2 w-fit">
+                  <Plus size={14}/> Agregar retiro
+                </button>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[640px]">
+                  <thead className="bg-slate-50 text-[10px] uppercase tracking-widest text-slate-500">
+                    <tr>
+                      <th className="px-6 py-4 text-left">Detalle</th>
+                      <th className="px-6 py-4 text-right">Monto Retirado</th>
                       <th className="px-6 py-4 w-20"></th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {pyramidRent.entries.map(entry => (
-                      <tr key={entry.id} className="hover:bg-slate-50/80">
+                    {currentPyramidRentRecord.withdrawals.length === 0 && (
+                      <tr>
+                        <td colSpan="3" className="px-6 py-8 text-center text-sm text-slate-400">Sin retiros registrados en este mes.</td>
+                      </tr>
+                    )}
+                    {currentPyramidRentRecord.withdrawals.map(withdrawal => (
+                      <tr key={withdrawal.id} className="hover:bg-slate-50/80">
                         <td className="px-6 py-4">
                           <input
                             type="text"
-                            value={entry.detail}
-                            onChange={e => handlePyramidRentEntryChange(entry.id, 'detail', e.target.value)}
-                            onBlur={savePyramidRentEntries}
+                            value={withdrawal.detail}
+                            onChange={e => handlePyramidRentWithdrawalChange(withdrawal.id, 'detail', e.target.value)}
+                            onBlur={savePyramidRent}
                             className="w-full bg-transparent border-2 border-transparent focus:border-slate-200 rounded-xl px-3 py-2 font-medium outline-none"
-                            placeholder="Ej: arriendo abril, honorarios, dividendo"
+                            placeholder="Ej: retiro personal, transferencia, etc."
                           />
                         </td>
                         <td className="px-6 py-4">
                           <input
                             type="text"
                             inputMode="numeric"
-                            value={formatInputNumber(entry.income)}
-                            onChange={e => handlePyramidRentEntryChange(entry.id, 'income', e.target.value)}
-                            onBlur={savePyramidRentEntries}
-                            className="w-full bg-transparent border-2 border-transparent focus:border-green-200 rounded-xl px-3 py-2 font-medium text-right outline-none text-green-700"
-                            placeholder="0"
-                          />
-                        </td>
-                        <td className="px-6 py-4">
-                          <input
-                            type="text"
-                            inputMode="numeric"
-                            value={formatInputNumber(entry.expense)}
-                            onChange={e => handlePyramidRentEntryChange(entry.id, 'expense', e.target.value)}
-                            onBlur={savePyramidRentEntries}
-                            className="w-full bg-transparent border-2 border-transparent focus:border-rose-200 rounded-xl px-3 py-2 font-medium text-right outline-none text-rose-600"
+                            value={formatInputNumber(withdrawal.amount)}
+                            onChange={e => handlePyramidRentWithdrawalChange(withdrawal.id, 'amount', e.target.value)}
+                            onBlur={savePyramidRent}
+                            className="w-full bg-transparent border-2 border-transparent focus:border-amber-200 rounded-xl px-3 py-2 font-medium text-right outline-none text-amber-700"
                             placeholder="0"
                           />
                         </td>
                         <td className="px-6 py-4 text-right">
-                          <button onClick={() => deletePyramidRentEntry(entry.id)} className="p-2 text-slate-300 hover:text-red-500 transition-colors">
+                          <button onClick={() => deletePyramidRentWithdrawal(withdrawal.id)} className="p-2 text-slate-300 hover:text-red-500 transition-colors">
                             <Trash2 size={18}/>
                           </button>
                         </td>
@@ -1735,16 +1945,15 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
                     ))}
                   </tbody>
                   <tfoot>
-                    <tr className="bg-blue-50/70 border-t border-blue-100">
-                      <td className="px-6 py-4 font-black text-slate-800 uppercase text-xs">Sub total</td>
-                      <td className="px-6 py-4 text-right font-black text-blue-700">{formatCLP(pyramidRentIncome)}</td>
-                      <td className="px-6 py-4 text-right font-black text-blue-700">{formatCLP(pyramidRentExpense)}</td>
+                    <tr className="bg-amber-50/70 border-t border-amber-100">
+                      <td className="px-6 py-4 font-black text-slate-800 uppercase text-xs">Retiros del mes</td>
+                      <td className="px-6 py-4 text-right font-black text-amber-700">{formatCLP(pyramidRentWithdrawalsTotal)}</td>
                       <td></td>
                     </tr>
-                    <tr className={`${pyramidRentNet < 0 ? 'bg-red-50/70 border-t border-red-100' : 'bg-emerald-50/70 border-t border-emerald-100'}`}>
-                      <td className="px-6 py-4 font-black text-slate-800 uppercase text-xs">Total</td>
-                      <td colSpan="2" className={`px-6 py-4 text-right font-black text-lg ${pyramidRentNet < 0 ? 'text-red-700' : 'text-emerald-700'}`}>
-                        {formatCLP(pyramidRentNet)}
+                    <tr className={`${pyramidRentMonthEndUtility < 0 ? 'bg-red-50/70 border-t border-red-100' : 'bg-emerald-50/70 border-t border-emerald-100'}`}>
+                      <td className="px-6 py-4 font-black text-slate-800 uppercase text-xs">Cierre del mes</td>
+                      <td className={`px-6 py-4 text-right font-black text-lg ${pyramidRentMonthEndUtility < 0 ? 'text-red-700' : 'text-emerald-700'}`}>
+                        {formatCLP(pyramidRentMonthEndUtility)}
                       </td>
                       <td></td>
                     </tr>
