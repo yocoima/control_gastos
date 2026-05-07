@@ -25,6 +25,8 @@ const auth = getAuth(app);
 const db = getFirestore(app);
 const APP_COLLECTION_ID = 'gastos-chile-v2'; // Este es el ID de la colección principal para tus datos
 const GROQ_API_KEY = import.meta.env.VITE_GROQ_API_KEY;
+const PYRAMID_RENT_INITIAL_BANK_MONTH_KEY = '2026-05';
+const PYRAMID_RENT_INITIAL_BANK_BALANCE = 929932;
 const createGeneratedId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const getMonthKeyFromDate = (date) => `${date.getFullYear()}-${(date.getMonth() + 1).toString().padStart(2, '0')}`;
 const dateFromMonthKey = (key) => {
@@ -37,10 +39,11 @@ const createEmptyPyramidRentWithdrawal = () => ({
   detail: '',
   amount: 0
 });
-const createDefaultPyramidRent = () => ({
+const createDefaultPyramidRent = (targetMonthKey = null) => ({
   rentIncome: 0,
   dividendExpense: 0,
   quarterlyAdjustment: 0,
+  openingBankBalance: targetMonthKey === PYRAMID_RENT_INITIAL_BANK_MONTH_KEY ? PYRAMID_RENT_INITIAL_BANK_BALANCE : 0,
   withdrawals: []
 });
 export default function App() {
@@ -75,7 +78,7 @@ export default function App() {
   const [editingProjectionItemId, setEditingProjectionItemId] = useState(null);
   const [editingProjectionItemData, setEditingProjectionItemData] = useState({ type: '', amount: '' });
   const [evidence, setEvidence] = useState([]);
-  const [pyramidRent, setPyramidRent] = useState(() => createDefaultPyramidRent());
+  const [pyramidRent, setPyramidRent] = useState(() => createDefaultPyramidRent(getMonthKeyFromDate(new Date())));
   const [pyramidRentHistory, setPyramidRentHistory] = useState({});
   const [showEvidence, setShowEvidence] = useState(false);
   const [evidenceViewer, setEvidenceViewer] = useState(null);
@@ -529,8 +532,8 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
     return rentIncome + quarterlyAdjustment - getPyramidRentCommission(rentIncome) - dividendExpense;
   };
 
-  const normalizePyramidRentRecord = (record = pyramidRent) => {
-    const defaults = createDefaultPyramidRent();
+  const normalizePyramidRentRecord = (record = pyramidRent, targetMonthKey = monthKey) => {
+    const defaults = createDefaultPyramidRent(targetMonthKey);
     if (record.entries) {
       const rentEntry = record.entries.find(item => includesNormalized(item.detail, 'arriendo')) || record.entries.find(item => parseRawNumber(item.income) > 0);
       const dividendEntry = record.entries.find(item => includesNormalized(item.detail, 'dividendo'));
@@ -540,6 +543,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
         rentIncome: parseRawNumber(rentEntry?.income),
         dividendExpense: parseRawNumber(dividendEntry?.expense),
         quarterlyAdjustment: parseRawNumber(adjustmentEntry?.expense),
+        openingBankBalance: parseRawNumber(record.openingBankBalance ?? defaults.openingBankBalance),
         withdrawals: []
       };
     }
@@ -549,6 +553,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
       rentIncome: parseRawNumber(record.rentIncome),
       dividendExpense: parseRawNumber(record.dividendExpense),
       quarterlyAdjustment: parseRawNumber(record.quarterlyAdjustment),
+      openingBankBalance: parseRawNumber(record.openingBankBalance ?? defaults.openingBankBalance),
       withdrawals: (record.withdrawals || []).map(item => ({
         id: item.id || createGeneratedId(),
         detail: item.detail || '',
@@ -569,7 +574,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
         setBalances(data.balances || { itau: 0, scotia: 0, edenred: 0, tc_deuda: 0 });
         setTcBatches(data.tcBatches || []);
         setEvidence(data.evidence || []);
-        setPyramidRent(normalizePyramidRentRecord(data.pyramidRent || {}));
+        setPyramidRent(normalizePyramidRentRecord(data.pyramidRent || {}, monthKey));
         setProjectionItems((data.projection?.items || []).map(item => ({ ...item, amount: parseRawNumber(item.amount) })));
         setProjectionResult(data.projection?.result || null);
       } else {
@@ -577,7 +582,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
         setBalances({ itau: 0, scotia: 0, edenred: 0, tc_deuda: 0 });
         setTcBatches([]);
         setEvidence([]);
-        setPyramidRent(createDefaultPyramidRent());
+        setPyramidRent(createDefaultPyramidRent(monthKey));
         setProjectionItems([]);
         setProjectionResult(null);
       }
@@ -595,7 +600,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
     const unsubscribe = onSnapshot(recordsRef, (snap) => {
       const nextHistory = {};
       snap.forEach(docSnap => {
-        nextHistory[docSnap.id] = normalizePyramidRentRecord(docSnap.data().pyramidRent || {});
+        nextHistory[docSnap.id] = normalizePyramidRentRecord(docSnap.data().pyramidRent || {}, docSnap.id);
       });
       setPyramidRentHistory(nextHistory);
     });
@@ -1318,8 +1323,8 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
   const pyramidUtilityByMonth = {};
   let lastAdjustmentMonthKey = null;
   pyramidRentSortedMonthKeys.forEach(key => {
-    const record = normalizePyramidRentRecord(pyramidRentRecordsByMonth[key] || {});
-    runningPyramidUtility += getPyramidRentMonthNet(record) - getPyramidRentWithdrawalsTotal(record);
+    const record = normalizePyramidRentRecord(pyramidRentRecordsByMonth[key] || {}, key);
+    runningPyramidUtility += parseRawNumber(record.openingBankBalance) + getPyramidRentMonthNet(record) - getPyramidRentWithdrawalsTotal(record);
     pyramidUtilityByMonth[key] = runningPyramidUtility;
     if (parseRawNumber(record.quarterlyAdjustment) > 0) {
       lastAdjustmentMonthKey = key;
@@ -1775,6 +1780,9 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
                 <p className="text-[10px] text-blue-600 font-black uppercase mb-1">Utilidad</p>
                 <p className="text-2xl font-black text-blue-700">{formatCLP(pyramidRentAccumulatedUtility)}</p>
                 <p className="text-[10px] text-slate-400 font-medium mt-1">Acumulada hasta este mes, descontando retiros.</p>
+                {monthKey >= PYRAMID_RENT_INITIAL_BANK_MONTH_KEY && (
+                  <p className="text-[10px] text-slate-400 font-medium">Incluye base inicial de {formatCLP(PYRAMID_RENT_INITIAL_BANK_BALANCE)} desde mayo 2026.</p>
+                )}
               </div>
             </div>
 
