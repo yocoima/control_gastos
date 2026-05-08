@@ -626,6 +626,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
   useEffect(() => {
     if (!user || loading) return;
     setLoading(true);
+    setPyramidRent(createDefaultPyramidRent());
     const docRef = doc(db, 'artifacts', APP_COLLECTION_ID, 'users', user.uid, 'monthly_records', monthKey);
     const unsubscribe = onSnapshot(docRef, (snap) => {
       if (snap.exists()) {
@@ -1198,34 +1199,22 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
 
   const registerKarlaPayment = async (bank) => {
     const amount = totals.debt;
-    const isDebtInMyFavor = amount > 0;
     const newBalances = { ...balances, [bank]: balances[bank] + amount };
-    const updatedMovements = movements.map(m => {
-      if (isDebtInMyFavor) {
-        return (isSharedType(m.type) || isReceivableType(m.type)) ? { ...m, isPaid: true } : m;
-      }
-      return isOwedByMeType(m.type) ? { ...m, isPaid: true } : m;
-    });
-    const updatedFixed = fixedExpenses.map(exp => {
-      if (isDebtInMyFavor) {
-        return (isSharedType(exp.type) || isReceivableType(exp.type))
-          ? { ...exp, karlaPaidMonths: markMonthOnce(exp.karlaPaidMonths || [], monthKey) }
-          : exp;
-      }
-      return isOwedByMeType(exp.type)
+    const updatedMovements = movements.map(m =>
+      (isSharedType(m.type) || isReceivableType(m.type) || isOwedByMeType(m.type))
+        ? { ...m, isPaid: true }
+        : m
+    );
+    const updatedFixed = fixedExpenses.map(exp =>
+      (isSharedType(exp.type) || isReceivableType(exp.type) || isOwedByMeType(exp.type))
         ? { ...exp, karlaPaidMonths: markMonthOnce(exp.karlaPaidMonths || [], monthKey) }
-        : exp;
-    });
-    const updatedInstallments = installmentPlans.map(plan => {
-      if (isDebtInMyFavor) {
-        return (isSharedType(plan.type) || isReceivableType(plan.type))
-          ? { ...plan, paidMonths: markMonthOnce(plan.paidMonths || [], monthKey) }
-          : plan;
-      }
-      return isOwedByMeType(plan.type)
+        : exp
+    );
+    const updatedInstallments = installmentPlans.map(plan =>
+      (isSharedType(plan.type) || isReceivableType(plan.type) || isOwedByMeType(plan.type))
         ? { ...plan, paidMonths: markMonthOnce(plan.paidMonths || [], monthKey) }
-        : plan;
-    });
+        : plan
+    );
 
     setBalances(newBalances);
     setMovements(updatedMovements);
@@ -1439,25 +1428,20 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
     .sort();
   let runningPyramidUtility = monthKey >= PYRAMID_RENT_INITIAL_BANK_MONTH_KEY ? PYRAMID_RENT_INITIAL_BANK_BALANCE : 0;
   const pyramidUtilityByMonth = {};
-  const pyramidAcceptedAdjustmentsByMonth = {};
+  const currentPyramidAdjustmentRegistered = Boolean(currentPyramidRentRecord.quarterlyAdjustmentApplied) || parseRawNumber(currentPyramidRentRecord.quarterlyAdjustment) > 0;
   let lastAdjustmentMonthKey = null;
   pyramidRentSortedMonthKeys.forEach(key => {
     const record = normalizePyramidRentRecord(pyramidRentRecordsByMonth[key] || {});
     runningPyramidUtility += getPyramidRentMonthNet(record) - getPyramidRentWithdrawalsTotal(record);
     pyramidUtilityByMonth[key] = runningPyramidUtility;
-    const hasExplicitAdjustmentAmount = parseRawNumber(record.quarterlyAdjustment) > 0;
-    const hasAdjustmentMarker = Boolean(record.quarterlyAdjustmentApplied) || hasExplicitAdjustmentAmount;
-    const enoughMonthsSinceLastAdjustment = !lastAdjustmentMonthKey || getMonthDiff(lastAdjustmentMonthKey, key) >= 3;
-    const isAcceptedAdjustment = hasAdjustmentMarker && (enoughMonthsSinceLastAdjustment || hasExplicitAdjustmentAmount);
-    pyramidAcceptedAdjustmentsByMonth[key] = isAcceptedAdjustment;
-    if (isAcceptedAdjustment) {
+    const isRegisteredInThatMonth = Boolean(record.quarterlyAdjustmentApplied) || parseRawNumber(record.quarterlyAdjustment) > 0;
+    if (isRegisteredInThatMonth) {
       lastAdjustmentMonthKey = key;
     }
   });
   const pyramidRentAccumulatedUtility = monthKey >= PYRAMID_RENT_INITIAL_BANK_MONTH_KEY
     ? (pyramidUtilityByMonth[monthKey] ?? PYRAMID_RENT_INITIAL_BANK_BALANCE)
     : 0;
-  const currentPyramidAdjustmentRegistered = Boolean(pyramidAcceptedAdjustmentsByMonth[monthKey]);
   const monthsSinceAdjustment = lastAdjustmentMonthKey
     ? getMonthDiff(lastAdjustmentMonthKey, monthKey)
     : null;
