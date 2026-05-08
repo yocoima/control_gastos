@@ -43,6 +43,7 @@ const createDefaultPyramidRent = () => ({
   rentIncome: 0,
   dividendExpense: 0,
   quarterlyAdjustment: 0,
+  quarterlyAdjustmentApplied: false,
   withdrawals: []
 });
 export default function App() {
@@ -53,6 +54,7 @@ export default function App() {
   const [tcBatches, setTcBatches] = useState([]);
   const [loading, setLoading] = useState(true);
   const [isScanning, setIsScanning] = useState(false);
+  const [isScanningPyramidRent, setIsScanningPyramidRent] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [showTCImportModal, setShowTCImportModal] = useState(false);
@@ -101,6 +103,8 @@ export default function App() {
   
   const camInputRef = useRef(null);
   const galleryInputRef = useRef(null);
+  const pyramidRentCamInputRef = useRef(null);
+  const pyramidRentGalleryInputRef = useRef(null);
   const csvInputRef = useRef(null);
   const getMonthKey = (date) => getMonthKeyFromDate(date);
   const monthKey = getMonthKey(currentDate);
@@ -537,11 +541,13 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
       const rentEntry = record.entries.find(item => includesNormalized(item.detail, 'arriendo')) || record.entries.find(item => parseRawNumber(item.income) > 0);
       const dividendEntry = record.entries.find(item => includesNormalized(item.detail, 'dividendo'));
       const adjustmentEntry = record.entries.find(item => includesNormalized(item.detail, 'ajuste'));
+      const adjustmentAmount = parseRawNumber(adjustmentEntry?.income || adjustmentEntry?.expense);
       return {
         ...defaults,
         rentIncome: parseRawNumber(rentEntry?.income),
         dividendExpense: parseRawNumber(dividendEntry?.expense),
-        quarterlyAdjustment: parseRawNumber(adjustmentEntry?.expense),
+        quarterlyAdjustment: adjustmentAmount,
+        quarterlyAdjustmentApplied: adjustmentAmount > 0,
         withdrawals: []
       };
     }
@@ -551,6 +557,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
       rentIncome: parseRawNumber(record.rentIncome),
       dividendExpense: parseRawNumber(record.dividendExpense),
       quarterlyAdjustment: parseRawNumber(record.quarterlyAdjustment),
+      quarterlyAdjustmentApplied: Boolean(record.quarterlyAdjustmentApplied) || parseRawNumber(record.quarterlyAdjustment) > 0,
       withdrawals: (record.withdrawals || []).map(item => ({
         id: item.id || createGeneratedId(),
         detail: item.detail || '',
@@ -639,30 +646,32 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
   };
 
   // --- IA Y ACCIONES ---
+  const imageFileToBase64 = async (file) => new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      const maxSize = 1024;
+      let { width, height } = img;
+      if (width > maxSize || height > maxSize) {
+        if (width > height) { height = (height / width) * maxSize; width = maxSize; }
+        else { width = (width / height) * maxSize; height = maxSize; }
+      }
+      canvas.width = width;
+      canvas.height = height;
+      canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+      URL.revokeObjectURL(url);
+      resolve(canvas.toDataURL('image/jpeg', 0.8).split(',')[1]);
+    };
+    img.onerror = reject;
+    img.src = url;
+  });
+
   const processImage = async (file) => {
     if (!file) return;
     setIsScanning(true);
     try {
-      const base64Data = await new Promise((resolve, reject) => {
-        const img = new Image();
-        const url = URL.createObjectURL(file);
-        img.onload = () => {
-          const canvas = document.createElement('canvas');
-          const maxSize = 1024;
-          let { width, height } = img;
-          if (width > maxSize || height > maxSize) {
-            if (width > height) { height = (height / width) * maxSize; width = maxSize; }
-            else { width = (width / height) * maxSize; height = maxSize; }
-          }
-          canvas.width = width;
-          canvas.height = height;
-          canvas.getContext('2d').drawImage(img, 0, 0, width, height);
-          URL.revokeObjectURL(url);
-          resolve(canvas.toDataURL('image/jpeg', 0.8).split(',')[1]);
-        };
-        img.onerror = reject;
-        img.src = url;
-      });
+      const base64Data = await imageFileToBase64(file);
 
       const prompt = "Analiza esta boleta o factura. Extrae estrictamente un objeto JSON con este formato: {\"concept\": \"nombre del comercio o producto principal\", \"amount\": valor_total_numerico, \"category\": \"una de las categorías permitidas\"}. Categorías: Comida, Gastos fijos, Cuentas, Transporte, Diversión, Otros. Responde SOLO con el JSON, sin texto adicional.";
 
@@ -722,6 +731,83 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
       console.error("Error procesando boleta:", err);
       alert("Error al procesar la boleta: " + err.message);
     } finally { setIsScanning(false); }
+  };
+
+  const processPyramidRentImage = async (file) => {
+    if (!file) return;
+    setIsScanningPyramidRent(true);
+    try {
+      const base64Data = await imageFileToBase64(file);
+      const prompt = "Analiza este pantallazo relacionado con arriendos. Extrae SOLO un objeto JSON con este formato exacto: {\"kind\":\"rent_income|dividend_expense|quarterly_adjustment|withdrawal\",\"detail\":\"detalle breve\",\"amount\":12345}. Usa rent_income para pagos de arriendo o abonos recibidos; dividend_expense para dividendos o pagos asociados al inmueble; quarterly_adjustment para reajustes trimestrales o IPC; withdrawal para retiros o transferencias salientes desde la utilidad. amount debe ser un numero entero positivo. Si no estas completamente seguro, responde con la opcion mas probable. Sin texto adicional.";
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000);
+      const response = await fetch(`https://api.groq.com/openai/v1/chat/completions`, {
+        method: 'POST',
+        signal: controller.signal,
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${GROQ_API_KEY}`
+        },
+        body: JSON.stringify({
+          model: "meta-llama/llama-4-scout-17b-16e-instruct",
+          messages: [{
+            role: "user",
+            content: [
+              { type: "text", text: prompt },
+              { type: "image_url", image_url: { url: `data:image/jpeg;base64,${base64Data}` } }
+            ]
+          }],
+          response_format: { type: "json_object" }
+        })
+      });
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        const errData = await response.json();
+        throw new Error(errData.error?.message || `Error ${response.status} en la peticion a la IA`);
+      }
+
+      const result = await response.json();
+      if (!result.choices || result.choices.length === 0) {
+        throw new Error("La IA no devolvio resultados. Puede que la imagen sea ilegible.");
+      }
+
+      let cleanText = result.choices[0].message?.content || "";
+      cleanText = cleanText.replace(/```json|```/g, "").trim();
+      const data = JSON.parse(cleanText);
+      const amount = parseRawNumber(data.amount);
+      const detail = (data.detail || 'Pantallazo').toString().trim();
+      const kind = (data.kind || '').toString().trim();
+
+      if (!amount || amount <= 0) {
+        throw new Error("No pude detectar un monto valido en el pantallazo.");
+      }
+
+      let nextRecord = { ...pyramidRent };
+      if (kind === 'rent_income') {
+        nextRecord = { ...nextRecord, rentIncome: amount };
+      } else if (kind === 'dividend_expense') {
+        nextRecord = { ...nextRecord, dividendExpense: amount };
+      } else if (kind === 'quarterly_adjustment') {
+        nextRecord = { ...nextRecord, quarterlyAdjustment: amount, quarterlyAdjustmentApplied: true };
+      } else {
+        nextRecord = {
+          ...nextRecord,
+          withdrawals: [...(nextRecord.withdrawals || []), { id: createGeneratedId(), detail, amount }]
+        };
+      }
+
+      setPyramidRent(nextRecord);
+      await savePyramidRentRecord(nextRecord);
+    } catch (err) {
+      console.error("Error procesando pantallazo de arriendo:", err);
+      alert("Error al procesar el pantallazo: " + err.message);
+    } finally {
+      setIsScanningPyramidRent(false);
+      if (pyramidRentCamInputRef.current) pyramidRentCamInputRef.current.value = '';
+      if (pyramidRentGalleryInputRef.current) pyramidRentGalleryInputRef.current.value = '';
+    }
   };
 
   const handleAdd = (e) => {
@@ -1110,6 +1196,15 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
     await savePyramidRentRecord(pyramidRent);
   };
 
+  const togglePyramidRentAdjustmentApplied = async () => {
+    const nextRecord = {
+      ...pyramidRent,
+      quarterlyAdjustmentApplied: !currentPyramidRentRecord.quarterlyAdjustmentApplied
+    };
+    setPyramidRent(nextRecord);
+    await savePyramidRentRecord(nextRecord);
+  };
+
   const addPyramidRentWithdrawal = async () => {
     await updatePyramidRentRecord(prev => ({
       ...prev,
@@ -1324,7 +1419,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
     const record = normalizePyramidRentRecord(pyramidRentRecordsByMonth[key] || {});
     runningPyramidUtility += getPyramidRentMonthNet(record) - getPyramidRentWithdrawalsTotal(record);
     pyramidUtilityByMonth[key] = runningPyramidUtility;
-    if (parseRawNumber(record.quarterlyAdjustment) > 0) {
+    if (record.quarterlyAdjustmentApplied || parseRawNumber(record.quarterlyAdjustment) > 0) {
       lastAdjustmentMonthKey = key;
     }
   });
@@ -1335,7 +1430,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
     ? ((dateFromMonthKey(monthKey).getFullYear() - dateFromMonthKey(lastAdjustmentMonthKey).getFullYear()) * 12)
       + (dateFromMonthKey(monthKey).getMonth() - dateFromMonthKey(lastAdjustmentMonthKey).getMonth())
     : null;
-  const pyramidRentNeedsAdjustmentReminder = monthsSinceAdjustment !== null && monthsSinceAdjustment >= 3 && parseRawNumber(currentPyramidRentRecord.quarterlyAdjustment) === 0;
+  const pyramidRentNeedsAdjustmentReminder = monthsSinceAdjustment !== null && monthsSinceAdjustment >= 3 && !currentPyramidRentRecord.quarterlyAdjustmentApplied && parseRawNumber(currentPyramidRentRecord.quarterlyAdjustment) === 0;
   const pyramidRentMonthLabel = currentDate.toLocaleString('es-CL', { month: 'long', year: 'numeric' });
   const pyramidRentRentLabel = `arriendo ${getMonthName(currentDate)}`;
 
@@ -1786,6 +1881,27 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
               </div>
             </div>
 
+            <div className="bg-white p-6 rounded-[2.5rem] border border-slate-200 shadow-sm">
+              <div className="flex flex-col gap-4">
+                <div>
+                  <h3 className="font-black text-slate-800">Cargar pantallazo</h3>
+                  <p className="text-xs text-slate-400 font-medium">Usa camara o galeria para detectar arriendo, dividendo, ajuste o retiros igual que en Movimientos.</p>
+                </div>
+                <div className="grid grid-cols-2 gap-2 max-w-sm">
+                  <button onClick={() => pyramidRentCamInputRef.current?.click()} className="flex flex-col items-center justify-center gap-2 bg-slate-900 text-white p-4 rounded-3xl hover:bg-slate-800 transition-all">
+                    {isScanningPyramidRent ? <Loader2 className="animate-spin" size={20}/> : <Camera size={20}/>}
+                    <span className="text-[10px] font-black uppercase">Camara</span>
+                  </button>
+                  <button onClick={() => pyramidRentGalleryInputRef.current?.click()} className="flex flex-col items-center justify-center gap-2 bg-blue-50 text-blue-600 p-4 rounded-3xl border border-blue-100 hover:bg-blue-100 transition-all">
+                    {isScanningPyramidRent ? <Loader2 className="animate-spin" size={20}/> : <ImageIcon size={20}/>}
+                    <span className="text-[10px] font-black uppercase">Galeria</span>
+                  </button>
+                </div>
+                <input type="file" ref={pyramidRentCamInputRef} onChange={(e) => processPyramidRentImage(e.target.files[0])} accept="image/*" capture="environment" className="hidden" />
+                <input type="file" ref={pyramidRentGalleryInputRef} onChange={(e) => processPyramidRentImage(e.target.files[0])} accept="image/*" className="hidden" />
+              </div>
+            </div>
+
             <div className="bg-white rounded-[2.5rem] border border-slate-200 shadow-sm overflow-hidden">
               <div className="px-6 py-5 border-b border-slate-100">
                 <div>
@@ -1846,6 +1962,13 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
                       <td className="px-6 py-4">
                         <p className="font-bold text-slate-800">ajuste trimestral</p>
                         <p className="text-[10px] text-slate-400 font-medium">Ingresa el monto solo cuando corresponda aplicar el ajuste. Cuenta como ingreso.</p>
+                        <button
+                          onClick={togglePyramidRentAdjustmentApplied}
+                          className={`mt-2 inline-flex items-center gap-2 px-3 py-1.5 rounded-xl text-[10px] font-black uppercase transition-all ${currentPyramidRentRecord.quarterlyAdjustmentApplied ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}
+                        >
+                          <CheckCircle2 size={12}/>
+                          {currentPyramidRentRecord.quarterlyAdjustmentApplied ? 'Ajuste registrado' : 'Registrar ajuste sin sumar monto'}
+                        </button>
                       </td>
                       <td className="px-6 py-4">
                         <input
