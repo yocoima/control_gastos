@@ -33,6 +33,11 @@ const dateFromMonthKey = (key) => {
   const [year, month] = key.split('-').map(Number);
   return new Date(year, (month || 1) - 1, 1);
 };
+const getMonthDiff = (fromKey, toKey) => {
+  const fromDate = dateFromMonthKey(fromKey);
+  const toDate = dateFromMonthKey(toKey);
+  return ((toDate.getFullYear() - fromDate.getFullYear()) * 12) + (toDate.getMonth() - fromDate.getMonth());
+};
 const getMonthName = (date) => date.toLocaleString('es-CL', { month: 'long' }).toLowerCase();
 const createEmptyPyramidRentWithdrawal = () => ({
   id: createGeneratedId(),
@@ -44,6 +49,7 @@ const createDefaultPyramidRent = () => ({
   dividendExpense: 0,
   quarterlyAdjustment: 0,
   quarterlyAdjustmentApplied: false,
+  evidence: [],
   withdrawals: []
 });
 export default function App() {
@@ -54,7 +60,6 @@ export default function App() {
   const [tcBatches, setTcBatches] = useState([]);
   const [loading, setLoading] = useState(true);
   const [isScanning, setIsScanning] = useState(false);
-  const [isScanningPyramidRent, setIsScanningPyramidRent] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [showTCImportModal, setShowTCImportModal] = useState(false);
@@ -83,9 +88,12 @@ export default function App() {
   const [pyramidRentHistory, setPyramidRentHistory] = useState({});
   const [showEvidence, setShowEvidence] = useState(false);
   const [evidenceViewer, setEvidenceViewer] = useState(null);
+  const [showPyramidRentEvidence, setShowPyramidRentEvidence] = useState(false);
+  const [pyramidRentEvidenceViewer, setPyramidRentEvidenceViewer] = useState(null);
   const [editingFixedId, setEditingFixedId] = useState(null);
   const [editingFixedData, setEditingFixedData] = useState({});
   const evidenceInputRef = useRef(null);
+  const pyramidRentEvidenceInputRef = useRef(null);
   const DEFAULT_TYPES = ['Compartido', 'Individual', 'Yo debo', 'Préstamo', 'Ingreso'];
   const DEFAULT_CATEGORIES = ['Comida', 'Gastos fijos', 'Cuentas', 'Transporte', 'Diversión', 'Sueldo', 'Otros'];
   const PROJECTION_SPECIAL_TYPES = ['Impuestos', 'Cumpleaños', 'Cuotas especiales', 'Viajes', 'Permiso de circulación', 'Vacaciones', 'Gasto extraordinario'];
@@ -103,8 +111,6 @@ export default function App() {
   
   const camInputRef = useRef(null);
   const galleryInputRef = useRef(null);
-  const pyramidRentCamInputRef = useRef(null);
-  const pyramidRentGalleryInputRef = useRef(null);
   const csvInputRef = useRef(null);
   const getMonthKey = (date) => getMonthKeyFromDate(date);
   const monthKey = getMonthKey(currentDate);
@@ -501,6 +507,46 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
     return () => document.removeEventListener('paste', handler);
   }, [showEvidence]);
 
+  const addPyramidRentEvidence = async (file) => {
+    if (!file) return;
+    const base64 = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (e) => resolve(e.target.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+    const nextRecord = {
+      ...pyramidRent,
+      evidence: [...(pyramidRent.evidence || []), { id: createGeneratedId(), imageBase64: base64, uploadedAt: new Date().toLocaleString('es-CL') }]
+    };
+    setPyramidRent(nextRecord);
+    await savePyramidRentRecord(nextRecord);
+    if (pyramidRentEvidenceInputRef.current) pyramidRentEvidenceInputRef.current.value = '';
+  };
+
+  const deletePyramidRentEvidence = async (id) => {
+    const nextRecord = {
+      ...pyramidRent,
+      evidence: (pyramidRent.evidence || []).filter(item => item.id !== id)
+    };
+    setPyramidRent(nextRecord);
+    await savePyramidRentRecord(nextRecord);
+  };
+
+  const latestAddPyramidRentEvidence = useRef(null);
+  latestAddPyramidRentEvidence.current = addPyramidRentEvidence;
+
+  useEffect(() => {
+    if (!showPyramidRentEvidence) return;
+    const handler = (e) => {
+      if (e.target.closest('input, textarea, select')) return;
+      const imageItem = Array.from(e.clipboardData?.items || []).find(i => i.type.startsWith('image/'));
+      if (imageItem) latestAddPyramidRentEvidence.current(imageItem.getAsFile());
+    };
+    document.addEventListener('paste', handler);
+    return () => document.removeEventListener('paste', handler);
+  }, [showPyramidRentEvidence]);
+
   const getActiveFixedExpensesForMonth = (targetMonthKey) => fixedExpenses.filter(exp => {
     if (exp.startMonth > targetMonthKey) return false;
     if (exp.endMonth && exp.endMonth < targetMonthKey) return false;
@@ -548,6 +594,11 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
         dividendExpense: parseRawNumber(dividendEntry?.expense),
         quarterlyAdjustment: adjustmentAmount,
         quarterlyAdjustmentApplied: adjustmentAmount > 0,
+        evidence: (record.evidence || []).map(item => ({
+          id: item.id || createGeneratedId(),
+          imageBase64: item.imageBase64 || '',
+          uploadedAt: item.uploadedAt || new Date().toLocaleString('es-CL')
+        })),
         withdrawals: []
       };
     }
@@ -558,6 +609,11 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
       dividendExpense: parseRawNumber(record.dividendExpense),
       quarterlyAdjustment: parseRawNumber(record.quarterlyAdjustment),
       quarterlyAdjustmentApplied: Boolean(record.quarterlyAdjustmentApplied) || parseRawNumber(record.quarterlyAdjustment) > 0,
+      evidence: (record.evidence || []).map(item => ({
+        id: item.id || createGeneratedId(),
+        imageBase64: item.imageBase64 || '',
+        uploadedAt: item.uploadedAt || new Date().toLocaleString('es-CL')
+      })),
       withdrawals: (record.withdrawals || []).map(item => ({
         id: item.id || createGeneratedId(),
         detail: item.detail || '',
@@ -731,83 +787,6 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
       console.error("Error procesando boleta:", err);
       alert("Error al procesar la boleta: " + err.message);
     } finally { setIsScanning(false); }
-  };
-
-  const processPyramidRentImage = async (file) => {
-    if (!file) return;
-    setIsScanningPyramidRent(true);
-    try {
-      const base64Data = await imageFileToBase64(file);
-      const prompt = "Analiza este pantallazo relacionado con arriendos. Extrae SOLO un objeto JSON con este formato exacto: {\"kind\":\"rent_income|dividend_expense|quarterly_adjustment|withdrawal\",\"detail\":\"detalle breve\",\"amount\":12345}. Usa rent_income para pagos de arriendo o abonos recibidos; dividend_expense para dividendos o pagos asociados al inmueble; quarterly_adjustment para reajustes trimestrales o IPC; withdrawal para retiros o transferencias salientes desde la utilidad. amount debe ser un numero entero positivo. Si no estas completamente seguro, responde con la opcion mas probable. Sin texto adicional.";
-
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 30000);
-      const response = await fetch(`https://api.groq.com/openai/v1/chat/completions`, {
-        method: 'POST',
-        signal: controller.signal,
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${GROQ_API_KEY}`
-        },
-        body: JSON.stringify({
-          model: "meta-llama/llama-4-scout-17b-16e-instruct",
-          messages: [{
-            role: "user",
-            content: [
-              { type: "text", text: prompt },
-              { type: "image_url", image_url: { url: `data:image/jpeg;base64,${base64Data}` } }
-            ]
-          }],
-          response_format: { type: "json_object" }
-        })
-      });
-      clearTimeout(timeoutId);
-
-      if (!response.ok) {
-        const errData = await response.json();
-        throw new Error(errData.error?.message || `Error ${response.status} en la peticion a la IA`);
-      }
-
-      const result = await response.json();
-      if (!result.choices || result.choices.length === 0) {
-        throw new Error("La IA no devolvio resultados. Puede que la imagen sea ilegible.");
-      }
-
-      let cleanText = result.choices[0].message?.content || "";
-      cleanText = cleanText.replace(/```json|```/g, "").trim();
-      const data = JSON.parse(cleanText);
-      const amount = parseRawNumber(data.amount);
-      const detail = (data.detail || 'Pantallazo').toString().trim();
-      const kind = (data.kind || '').toString().trim();
-
-      if (!amount || amount <= 0) {
-        throw new Error("No pude detectar un monto valido en el pantallazo.");
-      }
-
-      let nextRecord = { ...pyramidRent };
-      if (kind === 'rent_income') {
-        nextRecord = { ...nextRecord, rentIncome: amount };
-      } else if (kind === 'dividend_expense') {
-        nextRecord = { ...nextRecord, dividendExpense: amount };
-      } else if (kind === 'quarterly_adjustment') {
-        nextRecord = { ...nextRecord, quarterlyAdjustment: amount, quarterlyAdjustmentApplied: true };
-      } else {
-        nextRecord = {
-          ...nextRecord,
-          withdrawals: [...(nextRecord.withdrawals || []), { id: createGeneratedId(), detail, amount }]
-        };
-      }
-
-      setPyramidRent(nextRecord);
-      await savePyramidRentRecord(nextRecord);
-    } catch (err) {
-      console.error("Error procesando pantallazo de arriendo:", err);
-      alert("Error al procesar el pantallazo: " + err.message);
-    } finally {
-      setIsScanningPyramidRent(false);
-      if (pyramidRentCamInputRef.current) pyramidRentCamInputRef.current.value = '';
-      if (pyramidRentGalleryInputRef.current) pyramidRentGalleryInputRef.current.value = '';
-    }
   };
 
   const handleAdd = (e) => {
@@ -1197,9 +1176,12 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
   };
 
   const togglePyramidRentAdjustmentApplied = async () => {
+    const nextApplied = currentPyramidRentRecord.quarterlyAdjustmentApplied && !currentPyramidAdjustmentRegistered
+      ? false
+      : !currentPyramidAdjustmentRegistered;
     const nextRecord = {
       ...pyramidRent,
-      quarterlyAdjustmentApplied: !currentPyramidRentRecord.quarterlyAdjustmentApplied
+      quarterlyAdjustmentApplied: nextApplied
     };
     setPyramidRent(nextRecord);
     await savePyramidRentRecord(nextRecord);
@@ -1210,6 +1192,49 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
       ...prev,
       withdrawals: [...prev.withdrawals, createEmptyPyramidRentWithdrawal()]
     }));
+  };
+
+  const markMonthOnce = (months = [], target) => months.includes(target) ? months : [...months, target];
+
+  const registerKarlaPayment = async (bank) => {
+    const amount = totals.debt;
+    const isDebtInMyFavor = amount > 0;
+    const newBalances = { ...balances, [bank]: balances[bank] + amount };
+    const updatedMovements = movements.map(m => {
+      if (isDebtInMyFavor) {
+        return (isSharedType(m.type) || isReceivableType(m.type)) ? { ...m, isPaid: true } : m;
+      }
+      return isOwedByMeType(m.type) ? { ...m, isPaid: true } : m;
+    });
+    const updatedFixed = fixedExpenses.map(exp => {
+      if (isDebtInMyFavor) {
+        return (isSharedType(exp.type) || isReceivableType(exp.type))
+          ? { ...exp, karlaPaidMonths: markMonthOnce(exp.karlaPaidMonths || [], monthKey) }
+          : exp;
+      }
+      return isOwedByMeType(exp.type)
+        ? { ...exp, karlaPaidMonths: markMonthOnce(exp.karlaPaidMonths || [], monthKey) }
+        : exp;
+    });
+    const updatedInstallments = installmentPlans.map(plan => {
+      if (isDebtInMyFavor) {
+        return (isSharedType(plan.type) || isReceivableType(plan.type))
+          ? { ...plan, paidMonths: markMonthOnce(plan.paidMonths || [], monthKey) }
+          : plan;
+      }
+      return isOwedByMeType(plan.type)
+        ? { ...plan, paidMonths: markMonthOnce(plan.paidMonths || [], monthKey) }
+        : plan;
+    });
+
+    setBalances(newBalances);
+    setMovements(updatedMovements);
+    setFixedExpenses(updatedFixed);
+    setInstallmentPlans(updatedInstallments);
+    await saveToCloud(updatedMovements, newBalances);
+    await saveFixedExpenses(updatedFixed);
+    await saveInstallmentPlans(updatedInstallments);
+    setShowPaymentModal(false);
   };
 
   const deletePyramidRentWithdrawal = async (id) => {
@@ -1414,23 +1439,29 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
     .sort();
   let runningPyramidUtility = monthKey >= PYRAMID_RENT_INITIAL_BANK_MONTH_KEY ? PYRAMID_RENT_INITIAL_BANK_BALANCE : 0;
   const pyramidUtilityByMonth = {};
+  const pyramidAcceptedAdjustmentsByMonth = {};
   let lastAdjustmentMonthKey = null;
   pyramidRentSortedMonthKeys.forEach(key => {
     const record = normalizePyramidRentRecord(pyramidRentRecordsByMonth[key] || {});
     runningPyramidUtility += getPyramidRentMonthNet(record) - getPyramidRentWithdrawalsTotal(record);
     pyramidUtilityByMonth[key] = runningPyramidUtility;
-    if (record.quarterlyAdjustmentApplied || parseRawNumber(record.quarterlyAdjustment) > 0) {
+    const hasExplicitAdjustmentAmount = parseRawNumber(record.quarterlyAdjustment) > 0;
+    const hasAdjustmentMarker = Boolean(record.quarterlyAdjustmentApplied) || hasExplicitAdjustmentAmount;
+    const enoughMonthsSinceLastAdjustment = !lastAdjustmentMonthKey || getMonthDiff(lastAdjustmentMonthKey, key) >= 3;
+    const isAcceptedAdjustment = hasAdjustmentMarker && (enoughMonthsSinceLastAdjustment || hasExplicitAdjustmentAmount);
+    pyramidAcceptedAdjustmentsByMonth[key] = isAcceptedAdjustment;
+    if (isAcceptedAdjustment) {
       lastAdjustmentMonthKey = key;
     }
   });
   const pyramidRentAccumulatedUtility = monthKey >= PYRAMID_RENT_INITIAL_BANK_MONTH_KEY
     ? (pyramidUtilityByMonth[monthKey] ?? PYRAMID_RENT_INITIAL_BANK_BALANCE)
     : 0;
+  const currentPyramidAdjustmentRegistered = Boolean(pyramidAcceptedAdjustmentsByMonth[monthKey]);
   const monthsSinceAdjustment = lastAdjustmentMonthKey
-    ? ((dateFromMonthKey(monthKey).getFullYear() - dateFromMonthKey(lastAdjustmentMonthKey).getFullYear()) * 12)
-      + (dateFromMonthKey(monthKey).getMonth() - dateFromMonthKey(lastAdjustmentMonthKey).getMonth())
+    ? getMonthDiff(lastAdjustmentMonthKey, monthKey)
     : null;
-  const pyramidRentNeedsAdjustmentReminder = monthsSinceAdjustment !== null && monthsSinceAdjustment >= 3 && !currentPyramidRentRecord.quarterlyAdjustmentApplied && parseRawNumber(currentPyramidRentRecord.quarterlyAdjustment) === 0;
+  const pyramidRentNeedsAdjustmentReminder = monthsSinceAdjustment !== null && monthsSinceAdjustment >= 3 && !currentPyramidAdjustmentRegistered && parseRawNumber(currentPyramidRentRecord.quarterlyAdjustment) === 0;
   const pyramidRentMonthLabel = currentDate.toLocaleString('es-CL', { month: 'long', year: 'numeric' });
   const pyramidRentRentLabel = `arriendo ${getMonthName(currentDate)}`;
 
@@ -1881,25 +1912,37 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
               </div>
             </div>
 
-            <div className="bg-white p-6 rounded-[2.5rem] border border-slate-200 shadow-sm">
-              <div className="flex flex-col gap-4">
-                <div>
-                  <h3 className="font-black text-slate-800">Cargar pantallazo</h3>
-                  <p className="text-xs text-slate-400 font-medium">Usa camara o galeria para detectar arriendo, dividendo, ajuste o retiros igual que en Movimientos.</p>
+            <div className="bg-white rounded-[2.5rem] border border-slate-200 shadow-sm overflow-hidden">
+              <button onClick={() => setShowPyramidRentEvidence(!showPyramidRentEvidence)} className="w-full p-5 flex justify-between items-center hover:bg-slate-50 transition-all">
+                <div className="flex items-center gap-3">
+                  <span className="font-black text-slate-700">Evidencia de Pago</span>
+                  {(currentPyramidRentRecord.evidence || []).length > 0 && <span className="text-[9px] font-black bg-slate-100 text-slate-500 px-2 py-1 rounded-lg">{currentPyramidRentRecord.evidence.length} imagen{currentPyramidRentRecord.evidence.length !== 1 ? 'es' : ''}</span>}
                 </div>
-                <div className="grid grid-cols-2 gap-2 max-w-sm">
-                  <button onClick={() => pyramidRentCamInputRef.current?.click()} className="flex flex-col items-center justify-center gap-2 bg-slate-900 text-white p-4 rounded-3xl hover:bg-slate-800 transition-all">
-                    {isScanningPyramidRent ? <Loader2 className="animate-spin" size={20}/> : <Camera size={20}/>}
-                    <span className="text-[10px] font-black uppercase">Camara</span>
-                  </button>
-                  <button onClick={() => pyramidRentGalleryInputRef.current?.click()} className="flex flex-col items-center justify-center gap-2 bg-blue-50 text-blue-600 p-4 rounded-3xl border border-blue-100 hover:bg-blue-100 transition-all">
-                    {isScanningPyramidRent ? <Loader2 className="animate-spin" size={20}/> : <ImageIcon size={20}/>}
-                    <span className="text-[10px] font-black uppercase">Galeria</span>
-                  </button>
+                {showPyramidRentEvidence ? <ChevronUp size={18} className="text-slate-400"/> : <ChevronDown size={18} className="text-slate-400"/>}
+              </button>
+              {showPyramidRentEvidence && (
+                <div className="px-6 pb-6">
+                  <input type="file" ref={pyramidRentEvidenceInputRef} accept="image/*" className="hidden" onChange={e => addPyramidRentEvidence(e.target.files[0])} />
+                  <div className="flex gap-3 mb-4">
+                    <button onClick={() => pyramidRentEvidenceInputRef.current?.click()} className="flex items-center gap-2 px-4 py-2 bg-slate-900 text-white rounded-2xl text-xs font-black hover:bg-slate-700 transition-all">
+                      <Camera size={14}/> SUBIR ARCHIVO
+                    </button>
+                    <div className="flex-1 flex items-center justify-center border-2 border-dashed border-slate-200 rounded-2xl px-4 py-2 text-xs text-slate-400 font-bold select-none bg-slate-50/50">
+                      Ctrl+V para pegar imagen
+                    </div>
+                  </div>
+                  {(currentPyramidRentRecord.evidence || []).length === 0 && <p className="text-xs text-slate-400 text-center py-6">Sin evidencias subidas este mes</p>}
+                  <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-3">
+                    {(currentPyramidRentRecord.evidence || []).map(ev => (
+                      <div key={ev.id} className="relative group">
+                        <img src={ev.imageBase64} alt="evidencia arriendo" onClick={() => setPyramidRentEvidenceViewer(ev)} className="w-full aspect-square object-cover rounded-2xl cursor-pointer hover:opacity-90 transition-opacity border border-slate-100" />
+                        <button onClick={() => deletePyramidRentEvidence(ev.id)} className="absolute top-1 right-1 p-1 bg-red-500 text-white rounded-lg opacity-0 group-hover:opacity-100 transition-opacity"><X size={10}/></button>
+                        <p className="text-[8px] text-slate-400 text-center mt-1 truncate">{ev.uploadedAt}</p>
+                      </div>
+                    ))}
+                  </div>
                 </div>
-                <input type="file" ref={pyramidRentCamInputRef} onChange={(e) => processPyramidRentImage(e.target.files[0])} accept="image/*" capture="environment" className="hidden" />
-                <input type="file" ref={pyramidRentGalleryInputRef} onChange={(e) => processPyramidRentImage(e.target.files[0])} accept="image/*" className="hidden" />
-              </div>
+              )}
             </div>
 
             <div className="bg-white rounded-[2.5rem] border border-slate-200 shadow-sm overflow-hidden">
@@ -1964,10 +2007,10 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
                         <p className="text-[10px] text-slate-400 font-medium">Ingresa el monto solo cuando corresponda aplicar el ajuste. Cuenta como ingreso.</p>
                         <button
                           onClick={togglePyramidRentAdjustmentApplied}
-                          className={`mt-2 inline-flex items-center gap-2 px-3 py-1.5 rounded-xl text-[10px] font-black uppercase transition-all ${currentPyramidRentRecord.quarterlyAdjustmentApplied ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}
+                          className={`mt-2 inline-flex items-center gap-2 px-3 py-1.5 rounded-xl text-[10px] font-black uppercase transition-all ${currentPyramidAdjustmentRegistered ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}
                         >
                           <CheckCircle2 size={12}/>
-                          {currentPyramidRentRecord.quarterlyAdjustmentApplied ? 'Ajuste registrado' : 'Registrar ajuste sin sumar monto'}
+                          {currentPyramidAdjustmentRegistered ? 'Ajuste registrado' : 'Registrar ajuste sin sumar monto'}
                         </button>
                       </td>
                       <td className="px-6 py-4">
@@ -2266,7 +2309,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
                       <th className="px-6 py-4 text-left cursor-pointer hover:text-blue-600 transition-colors" onClick={() => requestSort('Tipo')}>Tipo {getSortIcon('Tipo')}</th>
                       <th className="px-6 py-4 text-right cursor-pointer hover:text-blue-600 transition-colors" onClick={() => requestSort('Total')}>Total {getSortIcon('Total')}</th>
                       <th className="px-6 py-4 text-right cursor-pointer hover:text-blue-600 transition-colors" onClick={() => requestSort('Mi Parte')}>Mi Parte {getSortIcon('Mi Parte')}</th>
-                      <th className="px-6 py-4"></th>
+                      <th className="px-4 py-4 text-right sticky right-0 bg-white min-w-[120px]">Acciones</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-50">
@@ -2308,7 +2351,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
                           ) : formatCLP(exp.amount)}
                         </td>
                         <td className="px-6 py-4 text-right font-black text-blue-600">{formatCLP(exp.myPart)}</td>
-                        <td className="px-6 py-4 text-right">
+                        <td className="px-4 py-4 text-right sticky right-0 bg-white">
                           <div className="flex justify-end gap-1">
                             {isEditing ? (
                               <>
@@ -2344,7 +2387,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
                         </td>
                         <td className="px-6 py-4 text-right font-medium">{formatCLP(inst.monthlyAmount)}</td>
                         <td className="px-6 py-4 text-right font-black text-blue-600">{formatCLP(inst.myPart)}</td>
-                        <td className="px-6 py-4 text-right">
+                        <td className="px-4 py-4 text-right sticky right-0 bg-white">
                           <div className="flex justify-end gap-1">
                             <button onClick={() => toggleInstallmentPaid(inst.id)} title={inst.isPaid ? 'Marcar como no pagada' : 'Marcar como pagada'} className={`p-2 transition-colors ${inst.isPaid ? 'text-green-500' : 'text-slate-300 hover:text-green-500'}`}><CheckCircle2 size={18}/></button>
                             <button onClick={() => deleteInstallmentPlan(inst.id)} className="p-2 text-slate-300 hover:text-red-500 transition-colors"><Trash2 size={18}/></button>
@@ -2381,8 +2424,8 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
                         </td>
                         <td className="px-6 py-4 text-right font-medium">{editingId === m.id ? <input className="w-20 text-right border-2 border-blue-200 rounded-xl" value={formatInputNumber(m.amount)} onChange={e => handleUpdate(m.id, 'amount', e.target.value)}/> : formatCLP(m.amount)}</td>
                         <td className="px-6 py-4 text-right font-black text-blue-600">{formatCLP(m.myPart)}</td>
-                        <td className="px-6 py-4 text-right">
-                          <div className="flex justify-end gap-1 sm:opacity-0 sm:group-hover:opacity-100">
+                        <td className="px-4 py-4 text-right sticky right-0 bg-white">
+                          <div className="flex justify-end gap-1">
                             {editingId === m.id ? (
                               <button onClick={() => { saveToCloud(movements, balances); setEditingId(null); }} className="p-2 text-green-600"><Save size={18}/></button>
                             ) : (
@@ -2592,22 +2635,10 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
       {showPaymentModal && (
         <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-md z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-[3rem] p-8 w-full max-w-md">
-            <h3 className="font-black text-2xl text-center mb-8">¿Dónde recibiste el pago?</h3>
+            <h3 className="font-black text-2xl text-center mb-8">{totals.debt < 0 ? '¿Desde qué banco pagaste a Karla?' : '¿Dónde recibiste el pago?'}</h3>
             <div className="grid gap-3">
-              <button onClick={() => {
-                const newBals = {...balances, itau: balances.itau + totals.debt};
-                const updated = movements.map(m => (m.type==='Compartido'||m.type==='Deuda'||m.type==='Préstamo') ? {...m, isPaid: true} : m);
-                const updatedFixed = fixedExpenses.map(exp => exp.type === 'Compartido' ? { ...exp, karlaPaidMonths: [...(exp.karlaPaidMonths || []), monthKey] } : exp);
-                setBalances(newBals); setMovements(updated); setFixedExpenses(updatedFixed);
-                saveToCloud(updated, newBals); saveFixedExpenses(updatedFixed); setShowPaymentModal(false);
-              }} className="p-6 bg-slate-50 border-2 rounded-3xl font-black text-lg hover:border-blue-500 transition-all text-center">Banco Itaú</button>
-              <button onClick={() => {
-                const newBals = {...balances, scotia: balances.scotia + totals.debt};
-                const updated = movements.map(m => (m.type==='Compartido'||m.type==='Deuda'||m.type==='Préstamo') ? {...m, isPaid: true} : m);
-                const updatedFixed = fixedExpenses.map(exp => exp.type === 'Compartido' ? { ...exp, karlaPaidMonths: [...(exp.karlaPaidMonths || []), monthKey] } : exp);
-                setBalances(newBals); setMovements(updated); setFixedExpenses(updatedFixed);
-                saveToCloud(updated, newBals); saveFixedExpenses(updatedFixed); setShowPaymentModal(false);
-              }} className="p-6 bg-slate-50 border-2 rounded-3xl font-black text-lg hover:border-red-500 transition-all text-center">Scotiabank</button>
+              <button onClick={() => registerKarlaPayment('itau')} className="p-6 bg-slate-50 border-2 rounded-3xl font-black text-lg hover:border-blue-500 transition-all text-center">Banco Itaú</button>
+              <button onClick={() => registerKarlaPayment('scotia')} className="p-6 bg-slate-50 border-2 rounded-3xl font-black text-lg hover:border-red-500 transition-all text-center">Scotiabank</button>
               <button onClick={() => setShowPaymentModal(false)} className="py-4 text-slate-400 font-black uppercase text-xs text-center mt-2">Cerrar</button>
             </div>
           </div>
@@ -2796,6 +2827,16 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
             <button onClick={() => setEvidenceViewer(null)} className="absolute -top-10 right-0 text-white/70 hover:text-white"><X size={24}/></button>
             <img src={evidenceViewer.imageBase64} alt="evidencia" className="max-w-full max-h-[88vh] object-contain rounded-2xl" />
             <p className="text-white/50 text-xs text-center mt-3">{evidenceViewer.uploadedAt}</p>
+          </div>
+        </div>
+      )}
+
+      {pyramidRentEvidenceViewer && (
+        <div className="fixed inset-0 bg-black/90 z-50 flex items-center justify-center p-4" onClick={() => setPyramidRentEvidenceViewer(null)}>
+          <div className="relative max-w-[95vw] max-h-[95vh] flex flex-col items-center" onClick={e => e.stopPropagation()}>
+            <button onClick={() => setPyramidRentEvidenceViewer(null)} className="absolute -top-10 right-0 text-white/70 hover:text-white"><X size={24}/></button>
+            <img src={pyramidRentEvidenceViewer.imageBase64} alt="evidencia arriendo" className="max-w-full max-h-[88vh] object-contain rounded-2xl" />
+            <p className="text-white/50 text-xs text-center mt-3">{pyramidRentEvidenceViewer.uploadedAt}</p>
           </div>
         </div>
       )}
