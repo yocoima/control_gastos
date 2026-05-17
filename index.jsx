@@ -65,6 +65,7 @@ export default function App() {
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [showTCImportModal, setShowTCImportModal] = useState(false);
   const [showTCPaymentModal, setShowTCPaymentModal] = useState(false);
+  const [showScannedExpenseModal, setShowScannedExpenseModal] = useState(false);
   const [copied, setCopied] = useState(false);
   const [expandedBatches, setExpandedBatches] = useState([]);
   const [isDebtCollapsed, setIsDebtCollapsed] = useState(true);
@@ -93,6 +94,15 @@ export default function App() {
   const [pyramidRentEvidenceViewer, setPyramidRentEvidenceViewer] = useState(null);
   const [editingFixedId, setEditingFixedId] = useState(null);
   const [editingFixedData, setEditingFixedData] = useState({});
+  const [notification, setNotification] = useState(null);
+  const [scannedExpenseDraft, setScannedExpenseDraft] = useState({
+    concept: '',
+    amount: '',
+    category: 'Otros',
+    type: 'Individual',
+    paidWithCreditCard: false,
+    imageBase64: ''
+  });
   const evidenceInputRef = useRef(null);
   const pyramidRentEvidenceInputRef = useRef(null);
   const DEFAULT_TYPES = ['Compartido', 'Individual', 'Yo debo', 'Préstamo', 'Ingreso'];
@@ -109,6 +119,7 @@ export default function App() {
   const [newCategoryName, setNewCategoryName] = useState('');
   const [instTotal, setInstTotal] = useState('');
   const [instCount, setInstCount] = useState('');
+  const scannedImageInputRefs = useRef([]);
   
   const camInputRef = useRef(null);
   const galleryInputRef = useRef(null);
@@ -124,6 +135,12 @@ export default function App() {
   const [aiAdvice, setAiAdvice] = useState(null);
   const [aiAdviceLoading, setAiAdviceLoading] = useState(false);
   const [aiAdviceError, setAiAdviceError] = useState('');
+
+  useEffect(() => {
+    if (!notification) return undefined;
+    const timeoutId = window.setTimeout(() => setNotification(null), 3000);
+    return () => window.clearTimeout(timeoutId);
+  }, [notification]);
 
   // --- FORMATEO ---
   const formatCLP = (val) => new Intl.NumberFormat('es-CL', { style: 'currency', currency: 'CLP', minimumFractionDigits: 0 }).format(val || 0);
@@ -727,6 +744,48 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
     img.src = url;
   });
 
+  const showAppNotification = (message) => {
+    setNotification({ id: createGeneratedId(), message });
+  };
+
+  const addMovementEntries = async (entries, { creditCardAmount = 0, notificationMessage = '' } = {}) => {
+    const updatedMovements = [...movements, ...entries];
+    const updatedBalances = creditCardAmount > 0
+      ? { ...balances, tc_deuda: parseRawNumber(balances.tc_deuda) + creditCardAmount }
+      : balances;
+
+    setMovements(updatedMovements);
+    if (updatedBalances !== balances) {
+      setBalances(updatedBalances);
+    }
+    await saveToCloud(updatedMovements, updatedBalances);
+
+    if (notificationMessage) {
+      showAppNotification(notificationMessage);
+    }
+  };
+
+  const createMovementRecord = ({
+    concept,
+    amount,
+    type,
+    category,
+    paidWithCreditCard = false
+  }) => {
+    const normalizedAmount = parseRawNumber(amount);
+    return {
+      id: createGeneratedId(),
+      concept: concept?.trim() || 'Sin detalle',
+      amount: normalizedAmount,
+      type,
+      category,
+      myPart: isSharedType(type) ? normalizedAmount / 2 : (isIncomeType(type) ? 0 : normalizedAmount),
+      date: new Date().toLocaleDateString('es-CL'),
+      isPaid: false,
+      paidWithCreditCard
+    };
+  };
+
   const processImage = async (file) => {
     if (!file) return;
     setIsScanning(true);
@@ -772,20 +831,15 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
       let cleanText = result.choices[0].message?.content || "";
       cleanText = cleanText.replace(/```json|```/g, "").trim();
       const data = JSON.parse(cleanText);
-      
-      const newMov = {
-        id: Date.now().toString(),
+      setScannedExpenseDraft({
         concept: data.concept || "Escaneado",
-        amount: data.amount || 0,
-        type: 'Compartido',
+        amount: formatInputNumber(data.amount || 0),
         category: data.category || "Otros",
-        myPart: (data.amount || 0) / 2,
-        date: new Date().toLocaleDateString('es-CL'),
-        isPaid: false
-      };
-      const updated = [...movements, newMov];
-      setMovements(updated);
-      saveToCloud(updated, balances);
+        type: 'Individual',
+        paidWithCreditCard: false,
+        imageBase64: `data:image/jpeg;base64,${base64Data}`
+      });
+      setShowScannedExpenseModal(true);
 
     } catch (err) { 
       console.error("Error procesando boleta:", err);
@@ -793,25 +847,43 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
     } finally { setIsScanning(false); }
   };
 
-  const handleAdd = (e) => {
+  const handleAdd = async (e) => {
     e.preventDefault();
     const f = new FormData(e.target);
-    const amt = parseRawNumber(f.get('amount'));
-    const type = f.get('type');
-    const newMov = {
-      id: Date.now().toString(),
+    const paidWithCreditCard = f.get('paidWithCreditCard') === 'on';
+    const movement = createMovementRecord({
       concept: f.get('concept'),
-      amount: amt,
-      type: type,
+      amount: f.get('amount'),
+      type: f.get('type'),
       category: f.get('category'),
-      myPart: isSharedType(type) ? amt / 2 : (isIncomeType(type) ? 0 : amt),
-      date: new Date().toLocaleDateString('es-CL'),
-      isPaid: false
-    };
-    const updated = [...movements, newMov];
-    setMovements(updated);
-    saveToCloud(updated, balances);
+      paidWithCreditCard
+    });
+    await addMovementEntries([movement], {
+      creditCardAmount: paidWithCreditCard ? movement.amount : 0,
+      notificationMessage: 'Movimiento guardado correctamente.'
+    });
     e.target.reset();
+  };
+
+  const saveScannedExpenseDraft = async () => {
+    const movement = createMovementRecord(scannedExpenseDraft);
+    const creditCardAmount = scannedExpenseDraft.paidWithCreditCard ? movement.amount : 0;
+    await addMovementEntries([movement], {
+      creditCardAmount,
+      notificationMessage: 'Gasto escaneado y guardado correctamente.'
+    });
+    setShowScannedExpenseModal(false);
+    setScannedExpenseDraft({
+      concept: '',
+      amount: '',
+      category: 'Otros',
+      type: 'Individual',
+      paidWithCreditCard: false,
+      imageBase64: ''
+    });
+    scannedImageInputRefs.current.forEach(input => {
+      if (input) input.value = '';
+    });
   };
 
   const handleUpdate = (id, field, value) => {
@@ -1008,6 +1080,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
       const updatedBatches = [...tcBatches, newBatch];
       setTcBatches(updatedBatches);
       saveToCloud(movements, balances, updatedBatches);
+      showAppNotification('Carga de tarjeta importada correctamente.');
       setShowTCImportModal(false);
     }
   };
@@ -1051,6 +1124,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
         const updated = [...movements, ...newMovs];
         setMovements(updated);
         await saveToCloud(updated, balances);
+        showAppNotification(`${newMovs.length} movimiento${newMovs.length === 1 ? '' : 's'} importado${newMovs.length === 1 ? '' : 's'} desde CSV.`);
       } catch (error) {
         console.error("Error importando datos:", error);
       }
@@ -1400,9 +1474,9 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
     return sortConfig.direction === 'asc' ? <ChevronUp size={10} className="inline ml-1 text-blue-600" /> : <ChevronDown size={10} className="inline ml-1 text-blue-600" />;
   };
 
-  const sortedMovements = [...movements].sort((a, b) => {
+  const visibleSortedMovements = [...movements].sort((a, b) => {
     if (a.isPaid !== b.isPaid) return a.isPaid ? 1 : -1;
-    if (!sortConfig.key) return b.id.localeCompare(a.id);
+    if (sortConfig.key === 'id') return b.id.localeCompare(a.id);
     
     let aVal = a[sortConfig.key === 'Total' ? 'amount' : sortConfig.key === 'Detalle' ? 'concept' : sortConfig.key === 'Tipo' ? 'type' : sortConfig.key === 'Mi Parte' ? 'myPart' : sortConfig.key];
     let bVal = b[sortConfig.key === 'Total' ? 'amount' : sortConfig.key === 'Detalle' ? 'concept' : sortConfig.key === 'Tipo' ? 'type' : sortConfig.key === 'Mi Parte' ? 'myPart' : sortConfig.key];
@@ -1411,6 +1485,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
     if (aVal > bVal) return sortConfig.direction === 'asc' ? 1 : -1;
     return 0;
   });
+  const sortedMovements = [];
 
   const totalBancos = balances.itau + balances.scotia;
   const liquidezReal = totalBancos - balances.tc_deuda;
@@ -1484,7 +1559,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
     <div className="min-h-screen bg-slate-50 text-slate-900 pb-24 font-sans antialiased">
       {/* Header */}
       <header className="bg-white/90 backdrop-blur-md border-b px-4 py-4 sticky top-0 z-40 shadow-sm">
-        <div className="max-w-6xl mx-auto flex flex-col sm:flex-row justify-between items-center gap-3">
+        <div className="max-w-[1600px] mx-auto flex flex-col sm:flex-row justify-between items-center gap-3">
           <div className="flex items-center gap-2">
             <div className="bg-blue-600 p-2 rounded-xl text-white shadow-lg"><ReceiptText size={22}/></div>
             <h1 className="font-black text-xl tracking-tight hidden sm:block">Gastos Pro</h1>
@@ -1518,7 +1593,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
         </div>
       </header>
 
-      <main className="max-w-6xl mx-auto px-4 mt-6">
+      <main className="max-w-[1600px] mx-auto px-3 lg:px-6 mt-6">
         {/* Balances e Indicadores */}
         <div className="grid grid-cols-2 lg:grid-cols-6 gap-3 mb-8">
           {['itau', 'scotia', 'edenred'].map(b => (
@@ -1608,7 +1683,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
           </div>
         </div>
 
-        <details open className="bg-white rounded-[2rem] border border-slate-200 shadow-sm mb-8 overflow-hidden">
+        <details className="bg-white rounded-[2rem] border border-slate-200 shadow-sm mb-8 overflow-hidden">
           <summary className="cursor-pointer select-none px-5 py-4 text-[10px] font-black uppercase tracking-widest text-slate-500 bg-slate-50/70">
             Detalle cálculo del resumen
           </summary>
@@ -2106,7 +2181,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
           </div>
         )}
 
-        {activeTab === 'movimientos' && <><div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+        {activeTab === 'movimientos' && <><div className="grid grid-cols-1 lg:grid-cols-[360px_minmax(0,1fr)] gap-6 xl:gap-8">
           <div className="space-y-6">
             {/* Nuevo Gasto */}
             <div className="bg-white p-6 rounded-[2.5rem] border border-slate-200 shadow-sm">
@@ -2116,20 +2191,24 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
                   <button onClick={() => camInputRef.current?.click()} className="flex flex-col items-center justify-center gap-2 bg-slate-900 text-white p-4 rounded-3xl hover:bg-slate-800 transition-all">{isScanning ? <Loader2 className="animate-spin" size={20}/> : <Camera size={20}/>} <span className="text-[10px] font-black uppercase">Cámara</span></button>
                   <button onClick={() => galleryInputRef.current?.click()} className="flex flex-col items-center justify-center gap-2 bg-blue-50 text-blue-600 p-4 rounded-3xl border border-blue-100 hover:bg-blue-100 transition-all">{isScanning ? <Loader2 className="animate-spin" size={20}/> : <ImageIcon size={20}/>} <span className="text-[10px] font-black uppercase">Galería</span></button>
                 </div>
-                <input type="file" ref={camInputRef} onChange={(e) => processImage(e.target.files[0])} accept="image/*" capture="environment" className="hidden" />
-                <input type="file" ref={galleryInputRef} onChange={(e) => processImage(e.target.files[0])} accept="image/*" className="hidden" />
+                <input type="file" ref={(node) => { camInputRef.current = node; scannedImageInputRefs.current[0] = node; }} onChange={(e) => processImage(e.target.files[0])} accept="image/*" capture="environment" className="hidden" />
+                <input type="file" ref={(node) => { galleryInputRef.current = node; scannedImageInputRefs.current[1] = node; }} onChange={(e) => processImage(e.target.files[0])} accept="image/*" className="hidden" />
               </div>
               <form onSubmit={handleAdd} className="space-y-4">
                 <input name="concept" placeholder="¿En qué gastaste?" className="w-full bg-slate-50 border-2 border-transparent rounded-2xl p-4 text-sm font-medium focus:bg-white focus:border-blue-500 outline-none" required />
                 <div className="grid grid-cols-2 gap-3">
                   <input name="amount" placeholder="$ 0" onChange={e => e.target.value = formatInputNumber(e.target.value)} className="w-full bg-slate-50 border-2 border-transparent rounded-2xl p-4 text-sm font-black focus:bg-white focus:border-blue-500 outline-none" required />
-                  <select name="type" className="w-full bg-slate-50 border-2 border-transparent rounded-2xl px-3 py-4 text-sm font-bold outline-none">
+                  <select name="type" defaultValue="Individual" className="w-full bg-slate-50 border-2 border-transparent rounded-2xl px-3 py-4 text-sm font-bold outline-none">
                     {movTypes.map(t => <option key={t} value={t}>{t}</option>)}
                   </select>
                 </div>
                 <select name="category" className="w-full bg-slate-50 border-2 border-transparent rounded-2xl px-4 py-4 text-sm font-medium outline-none">
                   {movCategories.map(c => <option key={c}>{c}</option>)}
                 </select>
+                <label className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-medium text-slate-700">
+                  <input type="checkbox" name="paidWithCreditCard" className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500" />
+                  <span>Pagado con tarjeta de credito</span>
+                </label>
                 <button className="w-full bg-blue-600 text-white font-black py-4 rounded-2xl shadow-xl hover:bg-blue-700 transition-all">GUARDAR</button>
               </form>
             </div>
@@ -2294,17 +2373,62 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
                 </div>
               </div>
               {!isHistoryCollapsed && <div className="overflow-x-auto">
-                <table className="w-full text-sm">
+                <table className="w-full min-w-[760px] text-sm">
                   <thead className="bg-white text-[10px] font-black text-slate-400 uppercase tracking-widest border-b">
                     <tr>                      
-                      <th className="px-6 py-4 text-left cursor-pointer hover:text-blue-600 transition-colors" onClick={() => requestSort('Detalle')}>Detalle {getSortIcon('Detalle')}</th>
-                      <th className="px-6 py-4 text-left cursor-pointer hover:text-blue-600 transition-colors" onClick={() => requestSort('Tipo')}>Tipo {getSortIcon('Tipo')}</th>
-                      <th className="px-6 py-4 text-right cursor-pointer hover:text-blue-600 transition-colors" onClick={() => requestSort('Total')}>Total {getSortIcon('Total')}</th>
-                      <th className="px-6 py-4 text-right cursor-pointer hover:text-blue-600 transition-colors" onClick={() => requestSort('Mi Parte')}>Mi Parte {getSortIcon('Mi Parte')}</th>
+                      <th className="px-4 lg:px-6 py-4 text-left cursor-pointer hover:text-blue-600 transition-colors" onClick={() => requestSort('Detalle')}>Detalle {getSortIcon('Detalle')}</th>
+                      <th className="px-4 lg:px-6 py-4 text-left cursor-pointer hover:text-blue-600 transition-colors" onClick={() => requestSort('Tipo')}>Tipo {getSortIcon('Tipo')}</th>
+                      <th className="px-4 lg:px-6 py-4 text-right cursor-pointer hover:text-blue-600 transition-colors" onClick={() => requestSort('Total')}>Total {getSortIcon('Total')}</th>
+                      <th className="px-4 lg:px-6 py-4 text-right cursor-pointer hover:text-blue-600 transition-colors" onClick={() => requestSort('Mi Parte')}>Mi Parte {getSortIcon('Mi Parte')}</th>
                       <th className="px-4 py-4 text-right sticky right-0 bg-white min-w-[120px]">Acciones</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-50">
+                    {visibleSortedMovements.map(m => (
+                      <tr key={m.id} className={`group ${m.isPaid ? 'opacity-30' : 'hover:bg-slate-50'}`}>
+                        <td className="px-4 lg:px-6 py-4">
+                          {editingId === m.id ? (
+                            <div className="flex flex-col gap-1">
+                              <input className="w-full border-2 border-blue-200 rounded-xl px-2 py-1 font-bold text-sm" value={m.concept} onChange={e => handleUpdate(m.id, 'concept', e.target.value)} autoFocus />
+                              <select className="w-full border-2 border-blue-200 rounded-xl px-2 py-1 font-bold text-xs" value={m.category} onChange={e => handleUpdate(m.id, 'category', e.target.value)}>
+                                {movCategories.map(c => <option key={c} value={c}>{c}</option>)}
+                              </select>
+                            </div>
+                          ) : (
+                            <div className="min-w-0">
+                              <p className="font-bold text-slate-800 break-words">{m.concept}</p>
+                              <p className="text-[10px] text-slate-400 uppercase font-bold">{m.category}</p>
+                            </div>
+                          )}
+                        </td>
+                        <td className="px-4 lg:px-6 py-4">
+                          {editingId === m.id ? (
+                            <select className="border-2 border-blue-200 rounded-xl px-1 py-1 font-bold text-xs" value={m.type} onChange={e => handleUpdate(m.id, 'type', e.target.value)}>
+                              {movTypes.map(t => <option key={t} value={t}>{t}</option>)}
+                            </select>
+                          ) : (
+                            <div className="flex flex-wrap gap-2">
+                              <span className={`text-[9px] font-black px-2 py-1 rounded-lg uppercase ${m.type === 'Ingreso' ? 'bg-green-100 text-green-700' : m.type === 'PrÃ©stamo' ? 'bg-amber-100 text-amber-700' : m.type === 'Yo debo' ? 'bg-red-100 text-red-700' : m.type === 'Individual' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'}`}>{m.type}</span>
+                              {m.paidWithCreditCard && <span className="text-[9px] font-black px-2 py-1 rounded-lg uppercase bg-red-50 text-red-600">TC</span>}
+                            </div>
+                          )}
+                        </td>
+                        <td className="px-4 lg:px-6 py-4 text-right font-medium">{editingId === m.id ? <input className="w-24 text-right border-2 border-blue-200 rounded-xl" value={formatInputNumber(m.amount)} onChange={e => handleUpdate(m.id, 'amount', e.target.value)}/> : formatCLP(m.amount)}</td>
+                        <td className="px-4 lg:px-6 py-4 text-right font-black text-blue-600">{formatCLP(m.myPart)}</td>
+                        <td className="px-4 py-4 text-right sticky right-0 bg-white">
+                          <div className="flex justify-end gap-1">
+                            {editingId === m.id ? (
+                              <button onClick={() => { saveToCloud(movements, balances); setEditingId(null); }} className="p-2 text-green-600"><Save size={18}/></button>
+                            ) : (
+                              <>
+                                <button onClick={() => setEditingId(m.id)} className="p-2 text-slate-400 hover:text-blue-600"><Edit2 size={18}/></button>
+                                <button onClick={() => { const u = movements.filter(x => x.id !== m.id); setMovements(u); saveToCloud(u, balances); }} className="p-2 text-slate-400 hover:text-red-500"><Trash2 size={18}/></button>
+                              </>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
                     {/* Gastos fijos — siempre al inicio */}
                     {[...activeFixedExpenses].sort((a, b) => a.isPaid - b.isPaid).map(exp => {
                       const isEditing = editingFixedId === exp.id;
@@ -2657,6 +2781,74 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
         </div>
       )}
 
+      {showScannedExpenseModal && (
+        <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-md z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-[3rem] p-6 md:p-8 w-full max-w-4xl">
+            <div className="flex justify-between items-center gap-4 mb-6">
+              <div>
+                <h3 className="font-black text-2xl">Revisar gasto escaneado</h3>
+                <p className="text-slate-500 text-sm mt-1">Se precargaron los datos de la imagen para que los revises y los guardes como movimiento individual.</p>
+              </div>
+              <button onClick={() => setShowScannedExpenseModal(false)} className="p-2 text-slate-400 hover:bg-slate-100 rounded-xl"><X size={20}/></button>
+            </div>
+            <div className="grid grid-cols-1 lg:grid-cols-[300px_minmax(0,1fr)] gap-6">
+              <div className="bg-slate-50 border border-slate-200 rounded-[2rem] p-4">
+                {scannedExpenseDraft.imageBase64 ? (
+                  <img src={scannedExpenseDraft.imageBase64} alt="boleta escaneada" className="w-full max-h-[420px] object-contain rounded-[1.5rem] bg-white" />
+                ) : (
+                  <div className="h-[240px] rounded-[1.5rem] bg-white border border-dashed border-slate-200 flex items-center justify-center text-slate-400 text-sm font-medium">
+                    Sin vista previa
+                  </div>
+                )}
+              </div>
+              <div className="space-y-4">
+                <input
+                  value={scannedExpenseDraft.concept}
+                  onChange={(e) => setScannedExpenseDraft(prev => ({ ...prev, concept: e.target.value }))}
+                  placeholder="Detalle"
+                  className="w-full bg-slate-50 border-2 border-transparent rounded-2xl p-4 text-sm font-medium focus:bg-white focus:border-blue-500 outline-none"
+                />
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <input
+                    value={scannedExpenseDraft.amount}
+                    onChange={(e) => setScannedExpenseDraft(prev => ({ ...prev, amount: formatInputNumber(e.target.value) }))}
+                    placeholder="$ 0"
+                    className="w-full bg-slate-50 border-2 border-transparent rounded-2xl p-4 text-sm font-black focus:bg-white focus:border-blue-500 outline-none"
+                  />
+                  <select
+                    value={scannedExpenseDraft.type}
+                    onChange={(e) => setScannedExpenseDraft(prev => ({ ...prev, type: e.target.value }))}
+                    className="w-full bg-slate-50 border-2 border-transparent rounded-2xl px-3 py-4 text-sm font-bold outline-none"
+                  >
+                    {movTypes.map(t => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                </div>
+                <select
+                  value={scannedExpenseDraft.category}
+                  onChange={(e) => setScannedExpenseDraft(prev => ({ ...prev, category: e.target.value }))}
+                  className="w-full bg-slate-50 border-2 border-transparent rounded-2xl px-4 py-4 text-sm font-medium outline-none"
+                >
+                  {movCategories.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+                <label className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-medium text-slate-700">
+                  <input
+                    type="checkbox"
+                    checked={scannedExpenseDraft.paidWithCreditCard}
+                    onChange={(e) => setScannedExpenseDraft(prev => ({ ...prev, paidWithCreditCard: e.target.checked }))}
+                    className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                  />
+                  <span>Pagado con tarjeta de credito</span>
+                </label>
+                <div className="flex gap-3 pt-2">
+                  <button type="button" onClick={() => setShowScannedExpenseModal(false)} className="flex-1 py-4 bg-slate-100 text-slate-500 font-black rounded-2xl">CANCELAR</button>
+                  <button type="button" onClick={saveScannedExpenseDraft} className="flex-1 py-4 bg-blue-600 text-white font-black rounded-2xl shadow-xl shadow-blue-100">GUARDAR</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showTCPaymentModal && (
         <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-md z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-[3rem] p-8 w-full max-w-md">
@@ -2830,6 +3022,11 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
             <img src={pyramidRentEvidenceViewer.imageBase64} alt="evidencia arriendo" className="max-w-full max-h-[88vh] object-contain rounded-2xl" />
             <p className="text-white/50 text-xs text-center mt-3">{pyramidRentEvidenceViewer.uploadedAt}</p>
           </div>
+        </div>
+      )}
+      {notification && (
+        <div className="fixed bottom-4 right-4 z-[70] max-w-sm rounded-2xl bg-slate-900 px-4 py-3 text-sm font-bold text-white shadow-2xl">
+          {notification.message}
         </div>
       )}
     </div>
