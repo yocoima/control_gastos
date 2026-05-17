@@ -62,6 +62,7 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [isScanning, setIsScanning] = useState(false);
   const [editingId, setEditingId] = useState(null);
+  const [editingOriginalMovement, setEditingOriginalMovement] = useState(null);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [showTCImportModal, setShowTCImportModal] = useState(false);
   const [showTCPaymentModal, setShowTCPaymentModal] = useState(false);
@@ -886,6 +887,40 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
     });
   };
 
+  const startEditMovement = (movement) => {
+    setEditingId(movement.id);
+    setEditingOriginalMovement({
+      id: movement.id,
+      amount: parseRawNumber(movement.amount),
+      paidWithCreditCard: Boolean(movement.paidWithCreditCard)
+    });
+  };
+
+  const saveMovementEdit = async (movementId) => {
+    const updatedMovement = movements.find(m => m.id === movementId);
+    if (!updatedMovement) return;
+
+    const previousContribution = editingOriginalMovement?.paidWithCreditCard
+      ? parseRawNumber(editingOriginalMovement.amount)
+      : 0;
+    const nextContribution = updatedMovement.paidWithCreditCard
+      ? parseRawNumber(updatedMovement.amount)
+      : 0;
+    const tcDelta = nextContribution - previousContribution;
+    const nextBalances = tcDelta !== 0
+      ? { ...balances, tc_deuda: parseRawNumber(balances.tc_deuda) + tcDelta }
+      : balances;
+
+    if (nextBalances !== balances) {
+      setBalances(nextBalances);
+    }
+
+    await saveToCloud(movements, nextBalances);
+    setEditingId(null);
+    setEditingOriginalMovement(null);
+    showAppNotification('Movimiento actualizado correctamente.');
+  };
+
   const handleUpdate = (id, field, value) => {
     setMovements(prev => prev.map(m => {
       if (m.id !== id) return m;
@@ -895,6 +930,9 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
         const type = field === 'type' ? value : m.type;
         newObj.amount = amt;
         newObj.myPart = isSharedType(type) ? amt / 2 : (isIncomeType(type) ? 0 : amt);
+      }
+      if (field === 'paidWithCreditCard') {
+        newObj.paidWithCreditCard = Boolean(value);
       }
       return newObj;
     }));
@@ -2403,9 +2441,20 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
                         </td>
                         <td className="px-4 lg:px-6 py-4">
                           {editingId === m.id ? (
-                            <select className="border-2 border-blue-200 rounded-xl px-1 py-1 font-bold text-xs" value={m.type} onChange={e => handleUpdate(m.id, 'type', e.target.value)}>
-                              {movTypes.map(t => <option key={t} value={t}>{t}</option>)}
-                            </select>
+                            <div className="space-y-2">
+                              <select className="border-2 border-blue-200 rounded-xl px-1 py-1 font-bold text-xs w-full" value={m.type} onChange={e => handleUpdate(m.id, 'type', e.target.value)}>
+                                {movTypes.map(t => <option key={t} value={t}>{t}</option>)}
+                              </select>
+                              <label className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-2 py-2 text-[11px] font-bold text-slate-600">
+                                <input
+                                  type="checkbox"
+                                  checked={Boolean(m.paidWithCreditCard)}
+                                  onChange={e => handleUpdate(m.id, 'paidWithCreditCard', e.target.checked)}
+                                  className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                                />
+                                <span>TC</span>
+                              </label>
+                            </div>
                           ) : (
                             <div className="flex flex-wrap gap-2">
                               <span className={`text-[9px] font-black px-2 py-1 rounded-lg uppercase ${m.type === 'Ingreso' ? 'bg-green-100 text-green-700' : m.type === 'PrÃ©stamo' ? 'bg-amber-100 text-amber-700' : m.type === 'Yo debo' ? 'bg-red-100 text-red-700' : m.type === 'Individual' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'}`}>{m.type}</span>
@@ -2418,10 +2467,10 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
                         <td className="px-4 py-4 text-right sticky right-0 bg-white">
                           <div className="flex justify-end gap-1">
                             {editingId === m.id ? (
-                              <button onClick={() => { saveToCloud(movements, balances); setEditingId(null); }} className="p-2 text-green-600"><Save size={18}/></button>
+                              <button onClick={() => saveMovementEdit(m.id)} className="p-2 text-green-600"><Save size={18}/></button>
                             ) : (
                               <>
-                                <button onClick={() => setEditingId(m.id)} className="p-2 text-slate-400 hover:text-blue-600"><Edit2 size={18}/></button>
+                                <button onClick={() => startEditMovement(m)} className="p-2 text-slate-400 hover:text-blue-600"><Edit2 size={18}/></button>
                                 <button onClick={() => { const u = movements.filter(x => x.id !== m.id); setMovements(u); saveToCloud(u, balances); }} className="p-2 text-slate-400 hover:text-red-500"><Trash2 size={18}/></button>
                               </>
                             )}
