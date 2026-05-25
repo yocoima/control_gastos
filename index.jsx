@@ -659,6 +659,12 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
     setPyramidRent(createDefaultPyramidRent());
 
     const docRef = doc(db, 'artifacts', APP_COLLECTION_ID, 'users', user.uid, 'monthly_records', monthKey);
+    // Usamos una referencia para el mes activo para evitar race conditions
+    // donde un snapshot antiguo podría actualizar el estado después de que el mes ha cambiado.
+    const currentMonthKeyRef = useRef(monthKey);
+    useEffect(() => {
+      currentMonthKeyRef.current = monthKey;
+    }, [monthKey]);
     const unsubscribe = onSnapshot(docRef, (snap) => {
       if (snap.exists()) {
         const data = snap.data();
@@ -667,6 +673,12 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
         setTcBatches(data.tcBatches || []);
         setEvidence(data.evidence || []);
         setPyramidRent(normalizePyramidRentRecord(data.pyramidRent || {}, monthKey));
+
+        // Solo procesar si este snapshot es para el mes actualmente activo
+        if (snap.ref.id !== currentMonthKeyRef.current) {
+          console.warn(`Ignorando snapshot obsoleto para el mes ${snap.ref.id}. El mes actual es ${currentMonthKeyRef.current}.`);
+          return;
+        }
         setProjectionItems((data.projection?.items || []).map(item => ({ ...item, amount: parseRawNumber(item.amount) })));
         setProjectionResult(data.projection?.result || null);
       } else {
@@ -1191,12 +1203,22 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
   const getMyPart = (m) => {
     const amount = getAmount(m);
     if (isIncomeType(m.type) || isReceivableType(m.type)) return 0;
+    // Si es un movimiento fijo o cuota, y ya tiene myPart, usarlo.
+    // Esto es para los casos donde se calcula al guardar y no queremos recalcular.
+    if ((m.source === 'Fijo' || m.source === 'Cuota') && m.myPart !== undefined) {
+      return parseRawNumber(m.myPart);
+    }
     if (isSharedType(m.type)) return m.myPart !== undefined ? parseRawNumber(m.myPart) : amount / 2;
     return m.myPart !== undefined ? parseRawNumber(m.myPart) : amount;
   };
   const getProjectionExpenseAmount = (item) => {
     if (isIncomeType(item.type) || isReceivableType(item.type)) return 0;
     if (item.myPart !== undefined) return parseRawNumber(item.myPart);
+    // Si es un movimiento fijo o cuota, y ya tiene myPart, usarlo.
+    // Esto es para los casos donde se calcula al guardar y no queremos recalcular.
+    if ((item.source === 'Fijo' || item.source === 'Cuota') && item.myPart !== undefined) {
+      return parseRawNumber(item.myPart);
+    }
     return getMyPart(item);
   };
 
