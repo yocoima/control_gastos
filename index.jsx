@@ -647,7 +647,17 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
   useEffect(() => {
     if (!user) return;
     setLoading(true);
+
+    // Limpiar estado inmediatamente al cambiar de mes para evitar fugas de datos
+    setMovements([]);
+    setBalances({ itau: 0, scotia: 0, edenred: 0, tc_deuda: 0 });
+    setTcBatches([]);
+    setEvidence([]);
+    setProjectionItems([]);
+    setProjectionResult(null);
+    setAiAdvice(null);
     setPyramidRent(createDefaultPyramidRent());
+
     const docRef = doc(db, 'artifacts', APP_COLLECTION_ID, 'users', user.uid, 'monthly_records', monthKey);
     const unsubscribe = onSnapshot(docRef, (snap) => {
       if (snap.exists()) {
@@ -687,7 +697,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
       setPyramidRentHistory(nextHistory);
     });
     return () => unsubscribe();
-  }, [user, monthKey]);
+  }, [user]);
 
   const normalizeProjectionRecord = (projection = {}) => ({
     items: (projection.items || []).map(item => ({ ...item, amount: parseRawNumber(item.amount) })),
@@ -703,7 +713,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
     newProjection = { items: projectionItems, result: projectionResult },
     newPyramidRent = pyramidRent
   ) => {
-    if (!user) return;
+    if (!user || loading) return; // No permitir guardar si estamos cargando datos de otro mes
     try {
       await setDoc(doc(db, 'artifacts', APP_COLLECTION_ID, 'users', user.uid, 'monthly_records', monthKey), {
         movements: newMovs,
