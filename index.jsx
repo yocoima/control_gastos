@@ -12,12 +12,12 @@ import {
 // Reemplaza esto con tu objeto de configuración real de Firebase.
 // Puedes encontrarlo en la consola de Firebase, en "Configuración del proyecto" -> "Tus apps" (el script que me acabas de compartir)
 const firebaseConfig = {
-  apiKey: "AIzaSyBCWEncZRmIC0CInMFiN5XoGvVPSk0bl60",
-  authDomain: "control-de-gastos-e858a.firebaseapp.com",
-  projectId: "control-de-gastos-e858a",
-  storageBucket: "control-de-gastos-e858a.firebasestorage.app",
-  messagingSenderId: "788485557323",
-  appId: "1:788485557323:web:6842cbfbbe6e4f78b3d1ce"
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || "AIzaSyBCWEncZRmIC0CInMFiN5XoGvVPSk0bl60",
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || "control-de-gastos-e858a.firebaseapp.com",
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || "control-de-gastos-e858a",
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || "control-de-gastos-e858a.firebasestorage.app",
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || "788485557323",
+  appId: import.meta.env.VITE_FIREBASE_APP_ID || "1:788485557323:web:6842cbfbbe6e4f78b3d1ce"
 };
 
 const app = initializeApp(firebaseConfig);
@@ -645,7 +645,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
 
   // --- CARGA DE DATOS ---
   useEffect(() => {
-    if (!user || loading) return;
+    if (!user) return;
     setLoading(true);
     setPyramidRent(createDefaultPyramidRent());
     const docRef = doc(db, 'artifacts', APP_COLLECTION_ID, 'users', user.uid, 'monthly_records', monthKey);
@@ -674,7 +674,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
       setLoading(false);
     }, (err) => setLoading(false));
     return () => unsubscribe();
-  }, [user]);
+  }, [user, monthKey]);
 
   useEffect(() => {
     if (!user) return;
@@ -1488,11 +1488,11 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
       return acc;
     }, []).sort((a, b) => b.total - a.total);
 
-  const dashByType = movTypes.filter(t => !isIncomeType(t)).reduce((acc, type) => {
-    const total = dashMovements.filter(m => isType(m.type, type)).reduce((s, m) => s + getMyPart(m), 0);
-    if (total > 0) acc.push({ type, total });
-    return acc;
-  }, []).sort((a, b) => b.total - a.total);
+  const dashByType = movTypes.map(type => {
+    const total = dashMovements.filter(m => m.type === type).reduce((s, m) => s + getMyPart(m), 0);
+    return { type, total };
+  }).filter(item => item.total > 0)
+    .sort((a, b) => b.total - a.total);
 
   const dashTop5 = dashMovements
     .map(m => ({ concept: m.concept, amount: getMyPart(m), type: m.type, category: m.category }))
@@ -1523,8 +1523,6 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
     if (aVal > bVal) return sortConfig.direction === 'asc' ? 1 : -1;
     return 0;
   });
-  const sortedMovements = [];
-
   const totalBancos = balances.itau + balances.scotia;
   const liquidezReal = totalBancos - balances.tc_deuda;
   const currentPyramidRentRecord = normalizePyramidRentRecord(pyramidRent);
@@ -1779,7 +1777,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
         {activeTab === 'dashboard' && (
           <div className="space-y-6">
             {/* Por categoría y por tipo */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div>
               {/* Por categoría */}
               <div className="bg-white rounded-[2.5rem] border border-slate-200 shadow-sm p-6">
                 <h3 className="font-black text-slate-800 mb-1">Por Categoría</h3>
@@ -1808,32 +1806,6 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
               </div>
 
               {/* Por tipo */}
-              <div className="bg-white rounded-[2.5rem] border border-slate-200 shadow-sm p-6">
-                <h3 className="font-black text-slate-800 mb-1">Por Tipo</h3>
-                <p className="text-[10px] text-slate-400 uppercase font-black mb-5">Mi parte por tipo de movimiento</p>
-                {dashByType.length === 0 ? (
-                  <p className="text-slate-400 text-sm text-center py-8">Sin datos este mes</p>
-                ) : (
-                  <div className="space-y-4">
-                    {dashByType.map(({ type, total }) => {
-                      const pct = (total / dashByType[0].total) * 100;
-                      const color = TYPE_COLORS[type] || '#64748b';
-                      return (
-                        <div key={type}>
-                          <div className="flex justify-between items-baseline mb-1.5">
-                            <span className="text-sm font-bold text-slate-700">{type}</span>
-                            <span className="text-sm font-black text-slate-800">{formatCLP(total)}</span>
-                          </div>
-                          <div className="h-2.5 bg-slate-100 rounded-full overflow-hidden">
-                            <div className="h-full rounded-full transition-all duration-500" style={{ width: `${pct}%`, backgroundColor: color }} />
-                          </div>
-                          <p className="text-[9px] text-slate-400 mt-0.5 text-right font-medium">{pct.toFixed(0)}% del mayor</p>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
             </div>
 
             {/* Top 5 gastos */}
@@ -2556,49 +2528,6 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
                           <div className="flex justify-end gap-1">
                             <button onClick={() => toggleInstallmentPaid(inst.id)} title={inst.isPaid ? 'Marcar como no pagada' : 'Marcar como pagada'} className={`p-2 transition-colors ${inst.isPaid ? 'text-green-500' : 'text-slate-300 hover:text-green-500'}`}><CheckCircle2 size={18}/></button>
                             <button onClick={() => deleteInstallmentPlan(inst.id)} className="p-2 text-slate-300 hover:text-red-500 transition-colors"><Trash2 size={18}/></button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                    {/* Movimientos regulares */}
-                    {sortedMovements.map(m => (
-                      <tr key={m.id} className={`group ${m.isPaid ? 'opacity-30' : 'hover:bg-slate-50'}`}>
-                        <td className="px-6 py-4">
-                          {editingId === m.id ? (
-                            <div className="flex flex-col gap-1">
-                              <input className="w-full border-2 border-blue-200 rounded-xl px-2 py-1 font-bold text-sm" value={m.concept} onChange={e => handleUpdate(m.id, 'concept', e.target.value)} autoFocus />
-                              <select className="w-full border-2 border-blue-200 rounded-xl px-2 py-1 font-bold text-xs" value={m.category} onChange={e => handleUpdate(m.id, 'category', e.target.value)}>
-                                {movCategories.map(c => <option key={c} value={c}>{c}</option>)}
-                              </select>
-                            </div>
-                          ) : (
-                            <div>
-                              <p className="font-bold text-slate-800">{m.concept}</p>
-                              <p className="text-[10px] text-slate-400 uppercase font-bold">{m.category}</p>
-                            </div>
-                          )}
-                        </td>
-                        <td className="px-6 py-4">
-                          {editingId === m.id ? (
-                            <select className="border-2 border-blue-200 rounded-xl px-1 py-1 font-bold text-xs" value={m.type} onChange={e => handleUpdate(m.id, 'type', e.target.value)}>
-                              {movTypes.map(t => <option key={t} value={t}>{t}</option>)}
-                            </select>
-                          ) : (
-                            <span className={`text-[9px] font-black px-2 py-1 rounded-lg uppercase ${m.type === 'Ingreso' ? 'bg-green-100 text-green-700' : m.type === 'Préstamo' ? 'bg-amber-100 text-amber-700' : m.type === 'Yo debo' ? 'bg-red-100 text-red-700' : m.type === 'Individual' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'}`}>{m.type}</span>
-                          )}
-                        </td>
-                        <td className="px-6 py-4 text-right font-medium">{editingId === m.id ? <input className="w-20 text-right border-2 border-blue-200 rounded-xl" value={formatInputNumber(m.amount)} onChange={e => handleUpdate(m.id, 'amount', e.target.value)}/> : formatCLP(m.amount)}</td>
-                        <td className="px-6 py-4 text-right font-black text-blue-600">{formatCLP(m.myPart)}</td>
-                        <td className="px-4 py-4 text-right sticky right-0 bg-white">
-                          <div className="flex justify-end gap-1">
-                            {editingId === m.id ? (
-                              <button onClick={() => { saveToCloud(movements, balances); setEditingId(null); }} className="p-2 text-green-600"><Save size={18}/></button>
-                            ) : (
-                              <>
-                                <button onClick={() => setEditingId(m.id)} className="p-2 text-slate-400 hover:text-blue-600"><Edit2 size={18}/></button>
-                                <button onClick={() => { const u = movements.filter(x => x.id !== m.id); setMovements(u); saveToCloud(u, balances); }} className="p-2 text-slate-400 hover:text-red-500"><Trash2 size={18}/></button>
-                              </>
-                            )}
                           </div>
                         </td>
                       </tr>
