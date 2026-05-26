@@ -127,7 +127,14 @@ export default function App() {
   const csvInputRef = useRef(null);
   const getMonthKey = (date) => getMonthKeyFromDate(date);
   const monthKey = getMonthKey(currentDate);
+
+  const activeMonthKeyRef = useRef(monthKey);
+  useEffect(() => {
+    activeMonthKeyRef.current = monthKey;
+  }, [monthKey]);
+
   const changeMonth = (offset) => {
+    setLoading(true);
     setCurrentDate(prev => new Date(prev.getFullYear(), prev.getMonth() + offset, 1));
   };
 
@@ -660,6 +667,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
 
     const docRef = doc(db, 'artifacts', APP_COLLECTION_ID, 'users', user.uid, 'monthly_records', monthKey);
     const unsubscribe = onSnapshot(docRef, (snap) => {
+      if (snap.ref.id !== activeMonthKeyRef.current) return;
       if (snap.exists()) {
         const data = snap.data();
         setMovements(data.movements || []);
