@@ -1545,19 +1545,40 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
     return sortConfig.direction === 'asc' ? <ChevronUp size={10} className="inline ml-1 text-blue-600" /> : <ChevronDown size={10} className="inline ml-1 text-blue-600" />;
   };
 
-  const visibleSortedMovements = [...movements].sort((a, b) => {
-    if (a.isPaid !== b.isPaid) return a.isPaid ? 1 : -1;
-    if (sortConfig.key === 'id') return b.id.localeCompare(a.id);
-    
-    const keyMap = { 'Total': 'amount', 'Detalle': 'concept', 'Tipo': 'type', 'Mi Parte': 'myPart' };
-    const sortKey = keyMap[sortConfig.key] || sortConfig.key;
-    const aVal = a[sortKey];
-    const bVal = b[sortKey];
+  const getHistoryItemAmount = (item) => (
+    item.source === 'Cuota' ? parseRawNumber(item.monthlyAmount) : parseRawNumber(item.amount)
+  );
+  const getHistoryItemMyPart = (item) => (
+    item.myPart !== undefined ? parseRawNumber(item.myPart) : getMyPart(item)
+  );
 
-    if (aVal < bVal) return sortConfig.direction === 'asc' ? -1 : 1;
-    if (aVal > bVal) return sortConfig.direction === 'asc' ? 1 : -1;
-    return 0;
-  });
+  const getHistorySortValue = (item, key) => {
+    if (key === 'Detalle') return normalizeText(item.concept);
+    if (key === 'Tipo') return normalizeText(item.type);
+    if (key === 'Total') return getHistoryItemAmount(item);
+    if (key === 'Mi Parte') return getHistoryItemMyPart(item);
+    return (item.id ?? '').toString();
+  };
+
+  const compareHistoryItems = (a, b) => {
+    const aIsPaid = Boolean(a.isPaid);
+    const bIsPaid = Boolean(b.isPaid);
+    if (aIsPaid !== bIsPaid) return aIsPaid ? 1 : -1;
+    if (sortConfig.key === 'id') {
+      return (b.id ?? '').toString().localeCompare((a.id ?? '').toString(), 'es', { numeric: true, sensitivity: 'base' });
+    }
+
+    const aVal = getHistorySortValue(a, sortConfig.key);
+    const bVal = getHistorySortValue(b, sortConfig.key);
+    const comparison = typeof aVal === 'number' && typeof bVal === 'number'
+      ? aVal - bVal
+      : aVal.toString().localeCompare(bVal.toString(), 'es', { numeric: true, sensitivity: 'base' });
+
+    if (comparison !== 0) return sortConfig.direction === 'asc' ? comparison : -comparison;
+    return (b.id ?? '').toString().localeCompare((a.id ?? '').toString(), 'es', { numeric: true, sensitivity: 'base' });
+  };
+
+  const visibleSortedHistoryItems = [...allMovements].sort(compareHistoryItems);
   const totalBancos = balances.itau + balances.scotia;
   const liquidezReal = totalBancos - balances.tc_deuda;
   const currentPyramidRentRecord = normalizePyramidRentRecord(pyramidRent);
@@ -2429,7 +2450,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-50">
-                    {visibleSortedMovements.map(p => (
+                    {visibleSortedHistoryItems.filter(item => item.source === 'Movimiento').map(p => (
                       <tr key={p.id} className={`group ${p.isPaid ? 'opacity-30' : 'hover:bg-slate-50'}`}>
                         <td className="px-4 lg:px-6 py-4">
                           {editingId === p.id ? (
@@ -2486,7 +2507,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
                       </tr>
                     ))}
                     {/* Gastos fijos — siempre al inicio */}
-                    {[...activeFixedExpenses].sort((a, b) => a.isPaid - b.isPaid).map(exp => {
+                    {visibleSortedHistoryItems.filter(item => item.source === 'Fijo').map(exp => {
                       const isEditing = editingFixedId === exp.id;
                       return (
                       <tr key={'fix_' + exp.id} className={`group border-l-4 border-l-green-400 ${exp.isPaid ? 'opacity-30' : 'bg-green-50/20 hover:bg-green-50/40'}`}>
@@ -2543,7 +2564,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
                       );
                     })}
                     {/* Cuotas activas — siempre al inicio */}
-                    {[...activeInstallments].sort((a, b) => a.isPaid - b.isPaid).map(inst => (
+                    {visibleSortedHistoryItems.filter(item => item.source === 'Cuota').map(inst => (
                       <tr key={'inst_' + inst.id} className={`group border-l-4 border-l-blue-400 ${inst.isPaid ? 'opacity-30' : 'bg-blue-50/20 hover:bg-blue-50/40'}`}>
                         <td className="px-6 py-4">
                           <div>
