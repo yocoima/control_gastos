@@ -133,6 +133,8 @@ export default function App() {
     activeMonthKeyRef.current = monthKey;
   }, [monthKey]);
 
+  const loadedMonthKeyRef = useRef(monthKey);
+
   const changeMonth = (offset) => {
     setLoading(true);
     setCurrentDate(prev => new Date(prev.getFullYear(), prev.getMonth() + offset, 1));
@@ -676,6 +678,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
         setEvidence(data.evidence || []);
         setPyramidRent(normalizePyramidRentRecord(data.pyramidRent || {}, monthKey));
 
+        loadedMonthKeyRef.current = snap.ref.id;
         setProjectionItems((data.projection?.items || []).map(item => ({ ...item, amount: parseRawNumber(item.amount) })));
         setProjectionResult(data.projection?.result || null);
       } else {
@@ -684,6 +687,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
         setTcBatches([]);
         setEvidence([]);
         setPyramidRent(createDefaultPyramidRent());
+        loadedMonthKeyRef.current = monthKey;
         setProjectionItems([]);
         setProjectionResult(null);
       }
@@ -722,7 +726,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
     newProjection = { items: projectionItems, result: projectionResult },
     newPyramidRent = pyramidRent
   ) => {
-    if (!user || loading) return; // No permitir guardar si estamos cargando datos de otro mes
+    if (!user || loading || monthKey !== loadedMonthKeyRef.current) return; // No permitir guardar si el mes en memoria no coincide con el mes de destino
     try {
       await setDoc(doc(db, 'artifacts', APP_COLLECTION_ID, 'users', user.uid, 'monthly_records', monthKey), {
         movements: newMovs,
@@ -2461,7 +2465,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
                           ) : (
                             <div className="flex flex-wrap gap-2">
                               <span className={`text-[9px] font-black px-2 py-1 rounded-lg uppercase ${p.type === 'Ingreso' ? 'bg-green-100 text-green-700' : p.type === 'Préstamo' ? 'bg-amber-100 text-amber-700' : p.type === 'Yo debo' ? 'bg-red-100 text-red-700' : p.type === 'Individual' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'}`}>{p.type}</span>
-                              {m.paidWithCreditCard && <span className="text-[9px] font-black px-2 py-1 rounded-lg uppercase bg-red-50 text-red-600">TC</span>}
+                              {p.paidWithCreditCard && <span className="text-[9px] font-black px-2 py-1 rounded-lg uppercase bg-red-50 text-red-600">TC</span>}
                             </div>
                           )}
                         </td>
