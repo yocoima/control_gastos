@@ -659,12 +659,6 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
     setPyramidRent(createDefaultPyramidRent());
 
     const docRef = doc(db, 'artifacts', APP_COLLECTION_ID, 'users', user.uid, 'monthly_records', monthKey);
-    // Usamos una referencia para el mes activo para evitar race conditions
-    // donde un snapshot antiguo podría actualizar el estado después de que el mes ha cambiado.
-    const currentMonthKeyRef = useRef(monthKey);
-    useEffect(() => {
-      currentMonthKeyRef.current = monthKey;
-    }, [monthKey]);
     const unsubscribe = onSnapshot(docRef, (snap) => {
       if (snap.exists()) {
         const data = snap.data();
@@ -674,11 +668,6 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
         setEvidence(data.evidence || []);
         setPyramidRent(normalizePyramidRentRecord(data.pyramidRent || {}, monthKey));
 
-        // Solo procesar si este snapshot es para el mes actualmente activo
-        if (snap.ref.id !== currentMonthKeyRef.current) {
-          console.warn(`Ignorando snapshot obsoleto para el mes ${snap.ref.id}. El mes actual es ${currentMonthKeyRef.current}.`);
-          return;
-        }
         setProjectionItems((data.projection?.items || []).map(item => ({ ...item, amount: parseRawNumber(item.amount) })));
         setProjectionResult(data.projection?.result || null);
       } else {
