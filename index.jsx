@@ -2425,34 +2425,34 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-50">
-                    {visibleSortedMovements.map(m => (
-                      <tr key={m.id} className={`group ${m.isPaid ? 'opacity-30' : 'hover:bg-slate-50'}`}>
+                    {visibleSortedMovements.map(p => (
+                      <tr key={p.id} className={`group ${p.isPaid ? 'opacity-30' : 'hover:bg-slate-50'}`}>
                         <td className="px-4 lg:px-6 py-4">
-                          {editingId === m.id ? (
+                          {editingId === p.id ? (
                             <div className="flex flex-col gap-1">
-                              <input className="w-full border-2 border-blue-200 rounded-xl px-2 py-1 font-bold text-sm" value={m.concept} onChange={e => handleUpdate(m.id, 'concept', e.target.value)} autoFocus />
-                              <select className="w-full border-2 border-blue-200 rounded-xl px-2 py-1 font-bold text-xs" value={m.category} onChange={e => handleUpdate(m.id, 'category', e.target.value)}>
+                              <input className="w-full border-2 border-blue-200 rounded-xl px-2 py-1 font-bold text-sm" value={p.concept} onChange={e => handleUpdate(p.id, 'concept', e.target.value)} autoFocus />
+                              <select className="w-full border-2 border-blue-200 rounded-xl px-2 py-1 font-bold text-xs" value={p.category} onChange={e => handleUpdate(p.id, 'category', e.target.value)}>
                                 {movCategories.map(c => <option key={c} value={c}>{c}</option>)}
                               </select>
                             </div>
                           ) : (
                             <div className="min-w-0">
-                              <p className="font-bold text-slate-800 break-words">{m.concept}</p>
-                              <p className="text-[10px] text-slate-400 uppercase font-bold">{m.category}</p>
+                              <p className="font-bold text-slate-800 break-words">{p.concept}</p>
+                              <p className="text-[10px] text-slate-400 uppercase font-bold">{p.category}</p>
                             </div>
                           )}
                         </td>
                         <td className="px-4 lg:px-6 py-4">
-                          {editingId === m.id ? (
+                          {editingId === p.id ? (
                             <div className="space-y-2">
-                              <select className="border-2 border-blue-200 rounded-xl px-1 py-1 font-bold text-xs w-full" value={m.type} onChange={e => handleUpdate(m.id, 'type', e.target.value)}>
+                              <select className="border-2 border-blue-200 rounded-xl px-1 py-1 font-bold text-xs w-full" value={p.type} onChange={e => handleUpdate(p.id, 'type', e.target.value)}>
                                 {movTypes.map(t => <option key={t} value={t}>{t}</option>)}
                               </select>
                               <label className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-2 py-2 text-[11px] font-bold text-slate-600">
                                 <input
                                   type="checkbox"
-                                  checked={Boolean(m.paidWithCreditCard)}
-                                  onChange={e => handleUpdate(m.id, 'paidWithCreditCard', e.target.checked)}
+                                  checked={Boolean(p.paidWithCreditCard)}
+                                  onChange={e => handleUpdate(p.id, 'paidWithCreditCard', e.target.checked)}
                                   className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
                                 />
                                 <span>TC</span>
