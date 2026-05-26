@@ -1545,8 +1545,10 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
     if (a.isPaid !== b.isPaid) return a.isPaid ? 1 : -1;
     if (sortConfig.key === 'id') return b.id.localeCompare(a.id);
     
-    let aVal = a[sortConfig.key === 'Total' ? 'amount' : sortConfig.key === 'Detalle' ? 'concept' : sortConfig.key === 'Tipo' ? 'type' : sortConfig.key === 'Mi Parte' ? 'myPart' : sortConfig.key];
-    let bVal = b[sortConfig.key === 'Total' ? 'amount' : sortConfig.key === 'Detalle' ? 'concept' : sortConfig.key === 'Tipo' ? 'type' : sortConfig.key === 'Mi Parte' ? 'myPart' : sortConfig.key];
+    const keyMap = { 'Total': 'amount', 'Detalle': 'concept', 'Tipo': 'type', 'Mi Parte': 'myPart' };
+    const sortKey = keyMap[sortConfig.key] || sortConfig.key;
+    const aVal = a[sortKey];
+    const bVal = b[sortKey];
 
     if (aVal < bVal) return sortConfig.direction === 'asc' ? -1 : 1;
     if (aVal > bVal) return sortConfig.direction === 'asc' ? 1 : -1;
@@ -2458,21 +2460,21 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
                             </div>
                           ) : (
                             <div className="flex flex-wrap gap-2">
-                              <span className={`text-[9px] font-black px-2 py-1 rounded-lg uppercase ${m.type === 'Ingreso' ? 'bg-green-100 text-green-700' : m.type === 'PrÃ©stamo' ? 'bg-amber-100 text-amber-700' : m.type === 'Yo debo' ? 'bg-red-100 text-red-700' : m.type === 'Individual' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'}`}>{m.type}</span>
+                              <span className={`text-[9px] font-black px-2 py-1 rounded-lg uppercase ${p.type === 'Ingreso' ? 'bg-green-100 text-green-700' : p.type === 'Préstamo' ? 'bg-amber-100 text-amber-700' : p.type === 'Yo debo' ? 'bg-red-100 text-red-700' : p.type === 'Individual' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'}`}>{p.type}</span>
                               {m.paidWithCreditCard && <span className="text-[9px] font-black px-2 py-1 rounded-lg uppercase bg-red-50 text-red-600">TC</span>}
                             </div>
                           )}
                         </td>
-                        <td className="px-4 lg:px-6 py-4 text-right font-medium">{editingId === m.id ? <input className="w-24 text-right border-2 border-blue-200 rounded-xl" value={formatInputNumber(m.amount)} onChange={e => handleUpdate(m.id, 'amount', e.target.value)}/> : formatCLP(m.amount)}</td>
-                        <td className="px-4 lg:px-6 py-4 text-right font-black text-blue-600">{formatCLP(m.myPart)}</td>
+                        <td className="px-4 lg:px-6 py-4 text-right font-medium">{editingId === p.id ? <input className="w-24 text-right border-2 border-blue-200 rounded-xl" value={formatInputNumber(p.amount)} onChange={e => handleUpdate(p.id, 'amount', e.target.value)}/> : formatCLP(p.amount)}</td>
+                        <td className="px-4 lg:px-6 py-4 text-right font-black text-blue-600">{formatCLP(p.myPart)}</td>
                         <td className="px-4 py-4 text-right sticky right-0 bg-white">
                           <div className="flex justify-end gap-1">
-                            {editingId === m.id ? (
-                              <button onClick={() => saveMovementEdit(m.id)} className="p-2 text-green-600"><Save size={18}/></button>
+                            {editingId === p.id ? (
+                              <button onClick={() => saveMovementEdit(p.id)} className="p-2 text-green-600"><Save size={18}/></button>
                             ) : (
                               <>
-                                <button onClick={() => startEditMovement(m)} className="p-2 text-slate-400 hover:text-blue-600"><Edit2 size={18}/></button>
-                                <button onClick={() => { const u = movements.filter(x => x.id !== m.id); setMovements(u); saveToCloud(u, balances); }} className="p-2 text-slate-400 hover:text-red-500"><Trash2 size={18}/></button>
+                                <button onClick={() => startEditMovement(p)} className="p-2 text-slate-400 hover:text-blue-600"><Edit2 size={18}/></button>
+                                <button onClick={() => { const u = movements.filter(x => x.id !== p.id); setMovements(u); saveToCloud(u, balances); }} className="p-2 text-slate-400 hover:text-red-500"><Trash2 size={18}/></button>
                               </>
                             )}
                           </div>
