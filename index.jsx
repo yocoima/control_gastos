@@ -1,30 +1,26 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { initializeApp } from 'firebase/app';
-import { getFirestore, doc, setDoc, onSnapshot, collection } from 'firebase/firestore';
-import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signOut } from 'firebase/auth';
+import { doc, setDoc, onSnapshot, collection } from 'firebase/firestore';
+import { GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signOut } from 'firebase/auth';
 import { 
   ChevronLeft, ChevronRight, Trash2, ReceiptText, ChevronUp, ChevronDown, Eye, EyeOff,
   CheckCircle2, Camera, Loader2, Edit2, Save, Image as ImageIcon, LogOut, Plus,
   CreditCard, Wallet, ArrowRightLeft, Copy, Check, Download, Upload, ShieldCheck, Settings, X, Calculator
 } from 'lucide-react';
+import HistoryFilters from './components/HistoryFilters.jsx';
+import { auth, db } from './services/firebaseClient.js';
+import { requestFinancialAdvice, scanReceiptImage } from './services/aiService.js';
+import { deleteEvidenceImage, getEvidenceImageUrl, uploadEvidenceImage } from './services/storageService.js';
+import { createCsv, parseCsv } from './utils/csv.js';
+import {
+  adjustCreditCardDebt,
+  calculateInstallmentStatus,
+  calculateMyPart,
+  getOpenCreditCardContribution,
+  normalizeText,
+  parseRawNumber
+} from './utils/finance.js';
 
-// --- CONFIGURACIÓN FIREBASE ---
-// Reemplaza esto con tu objeto de configuración real de Firebase.
-// Puedes encontrarlo en la consola de Firebase, en "Configuración del proyecto" -> "Tus apps" (el script que me acabas de compartir)
-const firebaseConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || "AIzaSyBCWEncZRmIC0CInMFiN5XoGvVPSk0bl60",
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || "control-de-gastos-e858a.firebaseapp.com",
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || "control-de-gastos-e858a",
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || "control-de-gastos-e858a.firebasestorage.app",
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || "788485557323",
-  appId: import.meta.env.VITE_FIREBASE_APP_ID || "1:788485557323:web:6842cbfbbe6e4f78b3d1ce"
-};
-
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const db = getFirestore(app);
 const APP_COLLECTION_ID = 'gastos-chile-v2'; // Este es el ID de la colección principal para tus datos
-const GROQ_API_KEY = import.meta.env.VITE_GROQ_API_KEY;
 const PYRAMID_RENT_INITIAL_BANK_MONTH_KEY = '2026-05';
 const PYRAMID_RENT_INITIAL_BANK_BALANCE = 929932;
 const createGeneratedId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -39,6 +35,7 @@ const getMonthDiff = (fromKey, toKey) => {
   return ((toDate.getFullYear() - fromDate.getFullYear()) * 12) + (toDate.getMonth() - fromDate.getMonth());
 };
 const getMonthName = (date) => date.toLocaleString('es-CL', { month: 'long' }).toLowerCase();
+const confirmDeletion = (label) => window.confirm(`¿Eliminar ${label}? Esta acción no se puede deshacer.`);
 const createEmptyPyramidRentWithdrawal = () => ({
   id: createGeneratedId(),
   detail: '',
@@ -46,12 +43,26 @@ const createEmptyPyramidRentWithdrawal = () => ({
 });
 const createDefaultPyramidRent = () => ({
   rentIncome: 0,
+  bankInterestIncome: 0,
   dividendExpense: 0,
   quarterlyAdjustment: 0,
   quarterlyAdjustmentApplied: false,
   quarterlyAdjustmentAppliedMonthKey: null,
   evidence: [],
   withdrawals: []
+});
+const createProjectionInputSignature = (items, specialItems) => JSON.stringify({
+  items: items.map(item => ({
+    id: item.id,
+    source: item.source,
+    concept: item.concept,
+    amount: item.amount,
+    monthlyAmount: item.monthlyAmount,
+    myPart: item.myPart,
+    type: item.type,
+    category: item.category
+  })),
+  specialItems: specialItems.map(item => ({ id: item.id, type: item.type, amount: item.amount }))
 });
 export default function App() {
   const [user, setUser] = useState(null);
@@ -121,6 +132,9 @@ export default function App() {
   const [instTotal, setInstTotal] = useState('');
   const [instCount, setInstCount] = useState('');
   const scannedImageInputRefs = useRef([]);
+  const saveQueueRef = useRef(Promise.resolve());
+  const pyramidRentRef = useRef(pyramidRent);
+  pyramidRentRef.current = pyramidRent;
   
   const camInputRef = useRef(null);
   const galleryInputRef = useRef(null);
@@ -141,10 +155,19 @@ export default function App() {
   };
 
   const [sortConfig, setSortConfig] = useState({ key: 'id', direction: 'desc' });
+  const [historySearch, setHistorySearch] = useState('');
+  const [historyCategoryFilter, setHistoryCategoryFilter] = useState('');
+  const [historyTypeFilter, setHistoryTypeFilter] = useState('');
   const [activeTab, setActiveTab] = useState('movimientos');
   const [aiAdvice, setAiAdvice] = useState(null);
   const [aiAdviceLoading, setAiAdviceLoading] = useState(false);
   const [aiAdviceError, setAiAdviceError] = useState('');
+
+  useEffect(() => {
+    setHistorySearch('');
+    setHistoryCategoryFilter('');
+    setHistoryTypeFilter('');
+  }, [monthKey]);
 
   useEffect(() => {
     if (!notification) return undefined;
@@ -159,47 +182,12 @@ export default function App() {
     const clean = val.toString().replace(/\D/g, "");
     return clean ? new Intl.NumberFormat('es-CL').format(parseInt(clean, 10)) : "";
   };
-  const parseRawNumber = (val) => {
-    if (typeof val === 'number') return Number.isFinite(val) ? val : 0;
-    if (val === null || val === undefined) return 0;
-    const raw = val.toString().trim();
-    if (!raw) return 0;
-    const cleaned = raw.replace(/[^\d,.-]/g, "");
-    const sign = cleaned.includes("-") ? -1 : 1;
-    const unsigned = cleaned.replace(/-/g, "");
-    if (!unsigned) return 0;
-
-    const lastDot = unsigned.lastIndexOf(".");
-    const lastComma = unsigned.lastIndexOf(",");
-    const lastSeparator = Math.max(lastDot, lastComma);
-    let normalized = unsigned.replace(/[.,]/g, "");
-
-    if (lastSeparator !== -1) {
-      const integerPart = unsigned.slice(0, lastSeparator);
-      const decimalPart = unsigned.slice(lastSeparator + 1);
-      const hasMixedSeparators = lastDot !== -1 && lastComma !== -1;
-      const looksLikeDecimal = /^\d{1,2}$/.test(decimalPart) && (hasMixedSeparators || decimalPart.length < 3);
-
-      if (looksLikeDecimal) {
-        normalized = `${integerPart.replace(/[.,]/g, "")}.${decimalPart}`;
-      }
-    }
-
-    const parsed = Number(normalized);
-    return Number.isFinite(parsed) ? parsed * sign : 0;
-  };
-  const normalizeText = (val) => (val ?? '')
-    .toString()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .toLowerCase();
   const isType = (type, expected) => normalizeText(type) === normalizeText(expected);
   const isIncomeType = (type) => isType(type, 'Ingreso');
   const isSharedType = (type) => isType(type, 'Compartido');
   const isReceivableType = (type) => isType(type, 'Deuda') || isType(type, 'Préstamo');
   const isOwedByMeType = (type) => isType(type, 'Yo debo');
+  const isDebtRelevantType = (type) => isSharedType(type) || isReceivableType(type) || isOwedByMeType(type);
   const isCategory = (category, expected) => normalizeText(category) === normalizeText(expected);
   const includesNormalized = (value, pattern) => normalizeText(value).includes(normalizeText(pattern));
   const isCreditCardProjectionItem = (item) =>
@@ -261,6 +249,7 @@ export default function App() {
 
   const deleteType = (name) => {
     if (DEFAULT_TYPES.includes(name)) return;
+    if (!confirmDeletion(`el tipo “${name}”`)) return;
     const updated = movTypes.filter(t => t !== name);
     setMovTypes(updated);
     saveTypes(updated);
@@ -291,6 +280,7 @@ export default function App() {
 
   const deleteCategory = (name) => {
     if (DEFAULT_CATEGORIES.includes(name)) return;
+    if (!confirmDeletion(`la categoría “${name}”`)) return;
     const updated = movCategories.filter(c => c !== name);
     setMovCategories(updated);
     saveCategories(updated);
@@ -316,55 +306,18 @@ export default function App() {
     setAiAdviceError('');
     setAiAdvice(null);
     const monthName = currentDate.toLocaleString('es-CL', { month: 'long', year: 'numeric' });
-    const fmtN = (n) => new Intl.NumberFormat('es-CL', { style: 'currency', currency: 'CLP', minimumFractionDigits: 0 }).format(n);
-    const catLines = dashByCat.map(({ cat, total }) => `  - ${cat}: ${fmtN(total)}`).join('\n');
-    const typeLines = dashByTyp.map(({ type, total }) => `  - ${type}: ${fmtN(total)}`).join('\n');
-    const saldo = tots.income - tots.indiv;
-    const prompt = `Eres un asesor financiero personal experto. Analiza los datos del mes de ${monthName} y entrega consejos claros y accionables en español chileno.
-
-RESUMEN FINANCIERO:
-- Ingresos: ${fmtN(tots.income)}
-- Mis gastos totales (mi parte): ${fmtN(tots.indiv)}
-- Gastos compartidos totales: ${fmtN(tots.shared)}
-- Saldo neto del mes: ${fmtN(saldo)}
-
-MIS GASTOS POR CATEGORÍA:
-${catLines || '  (sin datos)'}
-
-MIS GASTOS POR TIPO:
-${typeLines || '  (sin datos)'}
-
-Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
-{
-  "diagnostico": "2-3 oraciones evaluando el mes",
-  "ahorro_recomendado": <número entero en CLP, sin formato>,
-  "ahorro_porcentaje": <número entre 0 y 100>,
-  "recomendaciones": ["consejo concreto 1", "consejo concreto 2", "consejo concreto 3"],
-  "alertas": ["alerta si aplica"],
-  "puntos_positivos": ["aspecto positivo si aplica"]
-}`;
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 30000);
-      const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-        method: 'POST',
-        signal: controller.signal,
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${GROQ_API_KEY}` },
-        body: JSON.stringify({
-          model: 'llama-3.3-70b-versatile',
-          messages: [{ role: 'user', content: prompt }],
-          response_format: { type: 'json_object' }
-        })
+      const advice = await requestFinancialAdvice({
+        monthName,
+        income: tots.income,
+        individualExpenses: tots.indiv,
+        sharedExpenses: tots.shared,
+        categories: dashByCat,
+        types: dashByTyp
       });
-      clearTimeout(timeoutId);
-      if (!response.ok) {
-        const err = await response.json();
-        throw new Error(err.error?.message || `Error ${response.status}`);
-      }
-      const result = await response.json();
-      setAiAdvice(JSON.parse(result.choices[0].message.content));
+      setAiAdvice(advice);
     } catch (err) {
-      setAiAdviceError(err.name === 'AbortError' ? 'Tiempo de espera agotado. Intenta de nuevo.' : err.message);
+      setAiAdviceError(err.message || 'No se pudo generar el análisis.');
     } finally {
       setAiAdviceLoading(false);
     }
@@ -391,6 +344,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
   };
 
   const deleteFixedExpense = (id) => {
+    if (!confirmDeletion('este gasto fijo y sus apariciones mensuales')) return;
     const updated = fixedExpenses.filter(e => e.id !== id);
     setFixedExpenses(updated);
     saveFixedExpenses(updated);
@@ -467,6 +421,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
   };
 
   const deleteInstallmentPlan = (id) => {
+    if (!confirmDeletion('este plan de cuotas')) return;
     const updated = installmentPlans.filter(p => p.id !== id);
     setInstallmentPlans(updated);
     saveInstallmentPlans(updated);
@@ -488,37 +443,32 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
   };
 
   const getInstallmentStatusForMonth = (plan, targetMonthKey = monthKey) => {
-    const [currYear, currMonth] = targetMonthKey.split('-').map(Number);
-    const [startYear, startMonthNum] = plan.startMonth.split('-').map(Number);
-    const monthsElapsed = (currYear - startYear) * 12 + (currMonth - startMonthNum);
-    const installmentNumber = monthsElapsed + 1;
-    const isActive = installmentNumber >= 1 && installmentNumber <= plan.installments;
-    const isFinished = installmentNumber > plan.installments;
-    const isPaid = (plan.paidMonths || []).includes(targetMonthKey);
-    const monthlyAmount = parseRawNumber(plan.monthlyAmount);
-    const myPart = isSharedType(plan.type) ? monthlyAmount / 2 : (isIncomeType(plan.type) ? 0 : monthlyAmount);
-    return { installmentNumber, isActive, isFinished, isPaid, myPart };
+    return calculateInstallmentStatus(plan, targetMonthKey);
   };
 
   const addEvidence = async (file) => {
     if (!file) return;
-    const base64 = await new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = (e) => resolve(e.target.result);
-      reader.onerror = reject;
-      reader.readAsDataURL(file);
-    });
-    const newItem = { id: Date.now().toString(), imageBase64: base64, uploadedAt: new Date().toLocaleString('es-CL') };
-    const updated = [...evidence, newItem];
-    setEvidence(updated);
-    saveToCloud(movements, balances, tcBatches, updated);
-    if (evidenceInputRef.current) evidenceInputRef.current.value = '';
+    try {
+      const uploaded = await uploadEvidenceImage(file, { uid: user.uid, monthKey, scope: 'pagos' });
+      const newItem = { id: createGeneratedId(), ...uploaded, uploadedAt: new Date().toLocaleString('es-CL') };
+      const updated = [...evidence, newItem];
+      setEvidence(updated);
+      await saveToCloud(movements, balances, tcBatches, updated);
+      showAppNotification('Evidencia guardada en Firebase Storage.');
+    } catch (error) {
+      alert(`No se pudo subir la evidencia: ${error.message}`);
+    } finally {
+      if (evidenceInputRef.current) evidenceInputRef.current.value = '';
+    }
   };
 
-  const deleteEvidence = (id) => {
+  const deleteEvidence = async (id) => {
+    if (!window.confirm('¿Eliminar esta evidencia de pago?')) return;
+    const item = evidence.find(entry => entry.id === id);
+    await deleteEvidenceImage(item?.storagePath);
     const updated = evidence.filter(e => e.id !== id);
     setEvidence(updated);
-    saveToCloud(movements, balances, tcBatches, updated);
+    await saveToCloud(movements, balances, tcBatches, updated);
   };
 
   const latestAddEvidence = useRef(null);
@@ -537,26 +487,34 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
 
   const addPyramidRentEvidence = async (file) => {
     if (!file) return;
-    const base64 = await new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = (e) => resolve(e.target.result);
-      reader.onerror = reject;
-      reader.readAsDataURL(file);
-    });
-    const nextRecord = {
-      ...pyramidRent,
-      evidence: [...(pyramidRent.evidence || []), { id: createGeneratedId(), imageBase64: base64, uploadedAt: new Date().toLocaleString('es-CL') }]
-    };
-    setPyramidRent(nextRecord);
-    await savePyramidRentRecord(nextRecord);
-    if (pyramidRentEvidenceInputRef.current) pyramidRentEvidenceInputRef.current.value = '';
+    try {
+      const uploaded = await uploadEvidenceImage(file, { uid: user.uid, monthKey, scope: 'arriendo' });
+      const currentRecord = pyramidRentRef.current;
+      const nextRecord = {
+        ...currentRecord,
+        evidence: [...(currentRecord.evidence || []), { id: createGeneratedId(), ...uploaded, uploadedAt: new Date().toLocaleString('es-CL') }]
+      };
+      pyramidRentRef.current = nextRecord;
+      setPyramidRent(nextRecord);
+      await savePyramidRentRecord(nextRecord);
+      showAppNotification('Evidencia de arriendo guardada en Firebase Storage.');
+    } catch (error) {
+      alert(`No se pudo subir la evidencia: ${error.message}`);
+    } finally {
+      if (pyramidRentEvidenceInputRef.current) pyramidRentEvidenceInputRef.current.value = '';
+    }
   };
 
   const deletePyramidRentEvidence = async (id) => {
+    if (!window.confirm('¿Eliminar esta evidencia de arriendo?')) return;
+    const currentRecord = pyramidRentRef.current;
+    const item = (currentRecord.evidence || []).find(entry => entry.id === id);
+    await deleteEvidenceImage(item?.storagePath);
     const nextRecord = {
-      ...pyramidRent,
-      evidence: (pyramidRent.evidence || []).filter(item => item.id !== id)
+      ...currentRecord,
+      evidence: (currentRecord.evidence || []).filter(item => item.id !== id)
     };
+    pyramidRentRef.current = nextRecord;
     setPyramidRent(nextRecord);
     await savePyramidRentRecord(nextRecord);
   };
@@ -593,7 +551,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
   const getActiveInstallmentsForMonth = (targetMonthKey) => installmentPlans.map(plan => {
     const status = getInstallmentStatusForMonth(plan, targetMonthKey);
     if (!status.isActive) return null;
-    const monthlyAmount = parseRawNumber(plan.monthlyAmount);
+    const monthlyAmount = status.monthlyAmount;
     return { ...plan, monthlyAmount, amount: monthlyAmount, ...status };
   }).filter(Boolean);
 
@@ -604,21 +562,28 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
   const getPyramidRentWithdrawalsTotal = (record) => (record.withdrawals || []).reduce((sum, item) => sum + parseRawNumber(item.amount), 0);
   const getPyramidRentMonthNet = (record) => {
     const rentIncome = parseRawNumber(record.rentIncome);
+    const bankInterestIncome = parseRawNumber(record.bankInterestIncome);
     const quarterlyAdjustment = parseRawNumber(record.quarterlyAdjustment);
     const dividendExpense = parseRawNumber(record.dividendExpense);
-    return rentIncome + quarterlyAdjustment - getPyramidRentCommission(rentIncome) - dividendExpense;
+    return rentIncome + bankInterestIncome + quarterlyAdjustment - getPyramidRentCommission(rentIncome) - dividendExpense;
   };
 
   const normalizePyramidRentRecord = (record = pyramidRent, targetMonth = monthKey) => {
     const defaults = createDefaultPyramidRent();
     if (record.entries) {
-      const rentEntry = record.entries.find(item => includesNormalized(item.detail, 'arriendo')) || record.entries.find(item => parseRawNumber(item.income) > 0);
       const dividendEntry = record.entries.find(item => includesNormalized(item.detail, 'dividendo'));
+      const interestEntry = record.entries.find(item => includesNormalized(item.detail, 'interes'));
       const adjustmentEntry = record.entries.find(item => includesNormalized(item.detail, 'ajuste'));
+      const rentEntry = record.entries.find(item => includesNormalized(item.detail, 'arriendo')) || record.entries.find(item => (
+        parseRawNumber(item.income) > 0
+        && item !== interestEntry
+        && item !== adjustmentEntry
+      ));
       const adjustmentAmount = parseRawNumber(adjustmentEntry?.income || adjustmentEntry?.expense);
       return {
         ...defaults,
         rentIncome: parseRawNumber(rentEntry?.income),
+        bankInterestIncome: parseRawNumber(interestEntry?.income),
         dividendExpense: parseRawNumber(dividendEntry?.expense),
         quarterlyAdjustment: adjustmentAmount,
         quarterlyAdjustmentApplied: adjustmentAmount > 0,
@@ -626,6 +591,8 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
         evidence: (record.evidence || []).map(item => ({
           id: item.id || createGeneratedId(),
           imageBase64: item.imageBase64 || '',
+          imageUrl: item.imageUrl || '',
+          storagePath: item.storagePath || '',
           uploadedAt: item.uploadedAt || new Date().toLocaleString('es-CL')
         })),
         withdrawals: []
@@ -635,6 +602,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
     return {
       ...defaults,
       rentIncome: parseRawNumber(record.rentIncome),
+      bankInterestIncome: parseRawNumber(record.bankInterestIncome),
       dividendExpense: parseRawNumber(record.dividendExpense),
       quarterlyAdjustment: parseRawNumber(record.quarterlyAdjustment),
       quarterlyAdjustmentApplied: Boolean(record.quarterlyAdjustmentApplied) || parseRawNumber(record.quarterlyAdjustment) > 0,
@@ -642,6 +610,8 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
       evidence: (record.evidence || []).map(item => ({
         id: item.id || createGeneratedId(),
         imageBase64: item.imageBase64 || '',
+        imageUrl: item.imageUrl || '',
+        storagePath: item.storagePath || '',
         uploadedAt: item.uploadedAt || new Date().toLocaleString('es-CL')
       })),
       withdrawals: (record.withdrawals || []).map(item => ({
@@ -727,7 +697,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
     newPyramidRent = pyramidRent
   ) => {
     if (!user || loading || monthKey !== loadedMonthKeyRef.current) return; // No permitir guardar si el mes en memoria no coincide con el mes de destino
-    try {
+    const saveOperation = async () => {
       await setDoc(doc(db, 'artifacts', APP_COLLECTION_ID, 'users', user.uid, 'monthly_records', monthKey), {
         movements: newMovs,
         balances: newBals,
@@ -740,10 +710,14 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
         projection: normalizeProjectionRecord(newProjection),
         updatedAt: new Date().toISOString()
       });
-    } catch (err) {
+    };
+
+    // Serializar escrituras evita que una petición lenta sobrescriba un cambio más reciente.
+    saveQueueRef.current = saveQueueRef.current.then(saveOperation, saveOperation).catch((err) => {
       console.error("Error al guardar en Firebase:", err);
       alert("Error al sincronizar con la base de datos: " + err.message);
-    }
+    });
+    return saveQueueRef.current;
   };
 
   // --- IA Y ACCIONES ---
@@ -806,7 +780,8 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
       myPart: isSharedType(type) ? normalizedAmount / 2 : (isIncomeType(type) ? 0 : normalizedAmount),
       date: new Date().toLocaleDateString('es-CL'),
       isPaid: false,
-      paidWithCreditCard
+      paidWithCreditCard,
+      creditCardSettled: false
     };
   };
 
@@ -815,46 +790,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
     setIsScanning(true);
     try {
       const base64Data = await imageFileToBase64(file);
-
-      const prompt = "Analiza esta boleta o factura. Extrae estrictamente un objeto JSON con este formato: {\"concept\": \"nombre del comercio o producto principal\", \"amount\": valor_total_numerico, \"category\": \"una de las categorías permitidas\"}. Categorías: Comida, Gastos fijos, Cuentas, Transporte, Diversión, Otros. Responde SOLO con el JSON, sin texto adicional.";
-
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 30000);
-
-      const response = await fetch(`https://api.groq.com/openai/v1/chat/completions`, {
-        method: 'POST',
-        signal: controller.signal,
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${GROQ_API_KEY}`
-        },
-        body: JSON.stringify({
-          model: "meta-llama/llama-4-scout-17b-16e-instruct",
-          messages: [{
-            role: "user",
-            content: [
-              { type: "text", text: prompt },
-              { type: "image_url", image_url: { url: `data:image/jpeg;base64,${base64Data}` } }
-            ]
-          }],
-          response_format: { type: "json_object" }
-        })
-      });
-      clearTimeout(timeoutId);
-
-      if (!response.ok) {
-        const errData = await response.json();
-        throw new Error(errData.error?.message || `Error ${response.status} en la petición a la IA`);
-      }
-
-      const result = await response.json();
-      if (!result.choices || result.choices.length === 0) {
-        throw new Error("La IA no devolvió resultados. Puede que la imagen sea ilegible.");
-      }
-
-      let cleanText = result.choices[0].message?.content || "";
-      cleanText = cleanText.replace(/```json|```/g, "").trim();
-      const data = JSON.parse(cleanText);
+      const data = await scanReceiptImage(base64Data);
       setScannedExpenseDraft({
         concept: data.concept || "Escaneado",
         amount: formatInputNumber(data.amount || 0),
@@ -915,7 +851,8 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
     setEditingOriginalMovement({
       id: movement.id,
       amount: parseRawNumber(movement.amount),
-      paidWithCreditCard: Boolean(movement.paidWithCreditCard)
+      paidWithCreditCard: Boolean(movement.paidWithCreditCard),
+      creditCardSettled: movement.creditCardSettled
     });
   };
 
@@ -923,15 +860,9 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
     const updatedMovement = movements.find(m => m.id === movementId);
     if (!updatedMovement) return;
 
-    const previousContribution = editingOriginalMovement?.paidWithCreditCard
-      ? parseRawNumber(editingOriginalMovement.amount)
-      : 0;
-    const nextContribution = updatedMovement.paidWithCreditCard
-      ? parseRawNumber(updatedMovement.amount)
-      : 0;
-    const tcDelta = nextContribution - previousContribution;
-    const nextBalances = tcDelta !== 0
-      ? { ...balances, tc_deuda: parseRawNumber(balances.tc_deuda) + tcDelta }
+    const nextCardDebt = adjustCreditCardDebt(balances.tc_deuda, editingOriginalMovement, updatedMovement);
+    const nextBalances = nextCardDebt !== parseRawNumber(balances.tc_deuda)
+      ? { ...balances, tc_deuda: nextCardDebt }
       : balances;
 
     if (nextBalances !== balances) {
@@ -956,23 +887,50 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
       }
       if (field === 'paidWithCreditCard') {
         newObj.paidWithCreditCard = Boolean(value);
+        if (value) newObj.creditCardSettled = false;
       }
       return newObj;
     }));
   };
 
-  const handlePayTC = (bank) => {
+  const deleteMovement = async (id) => {
+    const movement = movements.find(item => item.id === id);
+    if (!movement) return;
+    if (!confirmDeletion(`el movimiento “${movement.concept}”`)) return;
+    const updatedMovements = movements.filter(item => item.id !== id);
+    const cardContribution = getOpenCreditCardContribution(movement);
+    const updatedBalances = cardContribution > 0
+      ? { ...balances, tc_deuda: Math.max(0, parseRawNumber(balances.tc_deuda) - cardContribution) }
+      : balances;
+
+    setMovements(updatedMovements);
+    if (updatedBalances !== balances) setBalances(updatedBalances);
+    if (editingId === id) {
+      setEditingId(null);
+      setEditingOriginalMovement(null);
+    }
+    await saveToCloud(updatedMovements, updatedBalances);
+    showAppNotification('Movimiento eliminado y totales actualizados.');
+  };
+
+  const handlePayTC = async (bank) => {
     const amountToPay = balances.tc_deuda;
     const newBalances = { ...balances, [bank]: balances[bank] - amountToPay, tc_deuda: 0 };
+    const updatedMovements = movements.map(movement => (
+      getOpenCreditCardContribution(movement) > 0
+        ? { ...movement, creditCardSettled: true }
+        : movement
+    ));
     setBalances(newBalances);
-    saveToCloud(movements, newBalances);
+    setMovements(updatedMovements);
+    await saveToCloud(updatedMovements, newBalances);
     setShowTCPaymentModal(false);
   };
 
   const copyDebtDetails = () => {
-    const pending = movements.filter(m => (m.type==='Compartido'||m.type==='Deuda'||m.type==='Préstamo'||m.type==='Yo debo') && !m.isPaid);
-    const pendingInst = activeInstallments.filter(inst => (inst.type==='Compartido'||inst.type==='Préstamo'||inst.type==='Yo debo') && !inst.isPaid);
-    const pendingFixed = activeFixedExpenses.filter(exp => (exp.type==='Compartido'||exp.type==='Préstamo'||exp.type==='Yo debo') && !exp.karlaIsPaid);
+    const pending = movements.filter(m => isDebtRelevantType(m.type) && !m.isPaid);
+    const pendingInst = activeInstallments.filter(inst => isDebtRelevantType(inst.type) && !inst.isPaid);
+    const pendingFixed = activeFixedExpenses.filter(exp => isDebtRelevantType(exp.type) && !exp.karlaIsPaid);
     const movText = pending.map(m => {
       const part = m.type === 'Compartido' ? m.amount / 2 : (m.type === 'Yo debo' ? -m.amount : m.amount);
       return `• ${m.concept}: ${formatCLP(part)}`;
@@ -1151,7 +1109,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
     const rows = movements.map(m => [
       m.id, m.concept, m.amount, m.type, m.category, m.myPart, m.date, m.isPaid ? 'Sí' : 'No'
     ]);
-    const csvContent = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+    const csvContent = `\uFEFF${createCsv(headers, rows)}`;
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
@@ -1160,6 +1118,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
 
   const importCSV = (file) => {
@@ -1167,19 +1126,17 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
     const reader = new FileReader();
     reader.onload = async (e) => {
       try {
-        const text = e.target.result;
-        const rows = text.split('\n').slice(1);
-        const newMovs = rows.filter(r => r.trim()).map(r => {
-          const cols = r.split(',');
+        const [, ...rows] = parseCsv(e.target.result);
+        const newMovs = rows.filter(cols => cols.some(cell => cell.trim())).map(cols => {
           return {
-            id: cols[0] || Date.now().toString() + Math.random().toString(),
+            id: cols[0] || createGeneratedId(),
             concept: cols[1] || 'Importado',
             amount: parseRawNumber(cols[2] || 0),
             type: cols[3] || 'Individual',
             category: cols[4] || 'Otros',
             myPart: parseRawNumber(cols[5] || 0),
             date: cols[6] || new Date().toLocaleDateString('es-CL'),
-            isPaid: cols[7] === 'Sí'
+            isPaid: normalizeText(cols[7]) === 'si'
           };
         });
         const updated = [...movements, ...newMovs];
@@ -1188,6 +1145,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
         showAppNotification(`${newMovs.length} movimiento${newMovs.length === 1 ? '' : 's'} importado${newMovs.length === 1 ? '' : 's'} desde CSV.`);
       } catch (error) {
         console.error("Error importando datos:", error);
+        alert(`No se pudo importar el CSV: ${error.message}`);
       }
     };
     reader.readAsText(file);
@@ -1200,18 +1158,20 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
     ...withSource(activeInstallments, 'Cuota'),
     ...withSource(activeFixedExpenses, 'Fijo')
   ];
+  const projectionInputSignature = createProjectionInputSignature(allMovements, projectionItems);
+
+  useEffect(() => {
+    if (!projectionResult || projectionResult.inputSignature === projectionInputSignature) return;
+    setProjectionResult(null);
+    saveToCloud(movements, balances, tcBatches, evidence, {
+      items: projectionItems,
+      result: null,
+      updatedAt: new Date().toISOString()
+    }, pyramidRent);
+  }, [projectionInputSignature, projectionResult?.inputSignature]);
+
   const getAmount = (m) => parseRawNumber(m.amount);
-  const getMyPart = (m) => {
-    const amount = getAmount(m);
-    if (isIncomeType(m.type) || isReceivableType(m.type)) return 0;
-    // Si es un movimiento fijo o cuota, y ya tiene myPart, usarlo.
-    // Esto es para los casos donde se calcula al guardar y no queremos recalcular.
-    if ((m.source === 'Fijo' || m.source === 'Cuota') && m.myPart !== undefined) {
-      return parseRawNumber(m.myPart);
-    }
-    if (isSharedType(m.type)) return m.myPart !== undefined ? parseRawNumber(m.myPart) : amount / 2;
-    return m.myPart !== undefined ? parseRawNumber(m.myPart) : amount;
-  };
+  const getMyPart = (m) => calculateMyPart(m);
   const getProjectionExpenseAmount = (item) => {
     if (isIncomeType(item.type) || isReceivableType(item.type)) return 0;
     if (item.myPart !== undefined) return parseRawNumber(item.myPart);
@@ -1297,40 +1257,48 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
   };
 
   const updatePyramidRentRecord = async (updater) => {
-    const nextRecord = typeof updater === 'function' ? updater(pyramidRent) : updater;
+    const nextRecord = typeof updater === 'function' ? updater(pyramidRentRef.current) : updater;
+    pyramidRentRef.current = nextRecord;
     setPyramidRent(nextRecord);
     await savePyramidRentRecord(nextRecord);
   };
 
   const updatePyramidRentField = async (field, value) => {
-    const nextRecord = { ...pyramidRent, [field]: parseRawNumber(value) };
+    const nextRecord = { ...pyramidRentRef.current, [field]: parseRawNumber(value) };
+    pyramidRentRef.current = nextRecord;
     setPyramidRent(nextRecord);
     await savePyramidRentRecord(nextRecord);
   };
 
   const handlePyramidRentFieldChange = (field, value) => {
-    setPyramidRent(prev => ({ ...prev, [field]: parseRawNumber(value) }));
+    const nextRecord = { ...pyramidRentRef.current, [field]: parseRawNumber(value) };
+    pyramidRentRef.current = nextRecord;
+    setPyramidRent(nextRecord);
   };
 
   const handlePyramidRentWithdrawalChange = (id, field, value) => {
     const normalizedValue = field === 'detail' ? value : parseRawNumber(value);
-    setPyramidRent(prev => ({
-      ...prev,
-      withdrawals: prev.withdrawals.map(item => item.id === id ? { ...item, [field]: normalizedValue } : item)
-    }));
+    const currentRecord = pyramidRentRef.current;
+    const nextRecord = {
+      ...currentRecord,
+      withdrawals: currentRecord.withdrawals.map(item => item.id === id ? { ...item, [field]: normalizedValue } : item)
+    };
+    pyramidRentRef.current = nextRecord;
+    setPyramidRent(nextRecord);
   };
 
   const savePyramidRent = async () => {
-    await savePyramidRentRecord(pyramidRent);
+    await savePyramidRentRecord(pyramidRentRef.current);
   };
 
   const togglePyramidRentAdjustmentApplied = async () => {
     const nextApplied = !currentPyramidAdjustmentRegistered;
     const nextRecord = {
-      ...pyramidRent,
+      ...pyramidRentRef.current,
       quarterlyAdjustmentApplied: nextApplied,
       quarterlyAdjustmentAppliedMonthKey: nextApplied ? monthKey : null
     };
+    pyramidRentRef.current = nextRecord;
     setPyramidRent(nextRecord);
     await savePyramidRentRecord(nextRecord);
   };
@@ -1348,17 +1316,17 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
     const amount = totals.debt;
     const newBalances = { ...balances, [bank]: balances[bank] + amount };
     const updatedMovements = movements.map(m =>
-      (isSharedType(m.type) || isReceivableType(m.type) || isOwedByMeType(m.type))
+      isDebtRelevantType(m.type)
         ? { ...m, isPaid: true }
         : m
     );
     const updatedFixed = fixedExpenses.map(exp =>
-      (isSharedType(exp.type) || isReceivableType(exp.type) || isOwedByMeType(exp.type))
+      isDebtRelevantType(exp.type)
         ? { ...exp, karlaPaidMonths: markMonthOnce(exp.karlaPaidMonths || [], monthKey) }
         : exp
     );
     const updatedInstallments = installmentPlans.map(plan =>
-      (isSharedType(plan.type) || isReceivableType(plan.type) || isOwedByMeType(plan.type))
+      isDebtRelevantType(plan.type)
         ? { ...plan, paidMonths: markMonthOnce(plan.paidMonths || [], monthKey) }
         : plan
     );
@@ -1374,6 +1342,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
   };
 
   const deletePyramidRentWithdrawal = async (id) => {
+    if (!confirmDeletion('este retiro de utilidad')) return;
     await updatePyramidRentRecord(prev => ({
       ...prev,
       withdrawals: prev.withdrawals.filter(item => item.id !== id)
@@ -1393,6 +1362,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
   };
 
   const removeProjectionItem = async (id) => {
+    if (!confirmDeletion('este gasto especial de la proyección')) return;
     const updated = projectionItems.filter(item => item.id !== id);
     setProjectionItems(updated);
     setProjectionResult(null);
@@ -1460,6 +1430,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
           other: summary.details.other
         },
         specialExpenses: projectionItems.map(item => ({ ...item, amount: parseRawNumber(item.amount) })),
+        inputSignature: projectionInputSignature,
         generatedAt: new Date().toISOString()
       };
       setProjectionResult(result);
@@ -1554,6 +1525,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
 
   const getHistorySortValue = (item, key) => {
     if (key === 'Detalle') return normalizeText(item.concept);
+    if (key === 'Categoría') return normalizeText(item.category);
     if (key === 'Tipo') return normalizeText(item.type);
     if (key === 'Total') return getHistoryItemAmount(item);
     if (key === 'Mi Parte') return getHistoryItemMyPart(item);
@@ -1578,12 +1550,27 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
     return (b.id ?? '').toString().localeCompare((a.id ?? '').toString(), 'es', { numeric: true, sensitivity: 'base' });
   };
 
-  const visibleSortedHistoryItems = [...allMovements].sort(compareHistoryItems);
+  const historyCategories = [...new Set(allMovements.map(item => item.category).filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b, 'es', { sensitivity: 'base' }));
+  const historyTypes = [...new Set(allMovements.map(item => item.type).filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b, 'es', { sensitivity: 'base' }));
+  const normalizedHistorySearch = normalizeText(historySearch);
+  const filteredHistoryItems = allMovements.filter(item => {
+    const matchesSearch = !normalizedHistorySearch || [item.concept, item.category, item.type, item.source]
+      .some(value => normalizeText(value).includes(normalizedHistorySearch));
+    const matchesCategory = !historyCategoryFilter || isCategory(item.category, historyCategoryFilter);
+    const matchesType = !historyTypeFilter || isType(item.type, historyTypeFilter);
+    return matchesSearch && matchesCategory && matchesType;
+  });
+  const visibleSortedHistoryItems = [...filteredHistoryItems].sort(compareHistoryItems);
+  const hasHistoryFilters = Boolean(historySearch || historyCategoryFilter || historyTypeFilter);
   const totalBancos = balances.itau + balances.scotia;
   const liquidezReal = totalBancos - balances.tc_deuda;
   const currentPyramidRentRecord = normalizePyramidRentRecord(pyramidRent);
   const pyramidRentCommission = getPyramidRentCommission(currentPyramidRentRecord.rentIncome);
-  const pyramidRentIncome = parseRawNumber(currentPyramidRentRecord.rentIncome) + parseRawNumber(currentPyramidRentRecord.quarterlyAdjustment);
+  const pyramidRentIncome = parseRawNumber(currentPyramidRentRecord.rentIncome)
+    + parseRawNumber(currentPyramidRentRecord.bankInterestIncome)
+    + parseRawNumber(currentPyramidRentRecord.quarterlyAdjustment);
   const pyramidRentExpense = pyramidRentCommission + parseRawNumber(currentPyramidRentRecord.dividendExpense);
   const pyramidRentNet = getPyramidRentMonthNet(currentPyramidRentRecord);
   const pyramidRentWithdrawalsTotal = getPyramidRentWithdrawalsTotal(currentPyramidRentRecord);
@@ -2024,7 +2011,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
 
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
               <div className="bg-white p-5 rounded-[2rem] border border-slate-200 shadow-sm">
-                <p className="text-[10px] text-green-600 font-black uppercase mb-1">Ingreso Arriendo</p>
+                <p className="text-[10px] text-green-600 font-black uppercase mb-1">Ingresos del mes</p>
                 <p className="text-2xl font-black text-green-700">{formatCLP(pyramidRentIncome)}</p>
               </div>
               <div className="bg-white p-5 rounded-[2rem] border border-slate-200 shadow-sm">
@@ -2068,7 +2055,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
                   <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-3">
                     {(currentPyramidRentRecord.evidence || []).map(ev => (
                       <div key={ev.id} className="relative group">
-                        <img src={ev.imageBase64} alt="evidencia arriendo" onClick={() => setPyramidRentEvidenceViewer(ev)} className="w-full aspect-square object-cover rounded-2xl cursor-pointer hover:opacity-90 transition-opacity border border-slate-100" />
+                        <img src={getEvidenceImageUrl(ev)} alt="evidencia arriendo" onClick={() => setPyramidRentEvidenceViewer(ev)} className="w-full aspect-square object-cover rounded-2xl cursor-pointer hover:opacity-90 transition-opacity border border-slate-100" />
                         <button onClick={() => deletePyramidRentEvidence(ev.id)} className="absolute top-1 right-1 p-1 bg-red-500 text-white rounded-lg opacity-0 group-hover:opacity-100 transition-opacity"><X size={10}/></button>
                         <p className="text-[8px] text-slate-400 text-center mt-1 truncate">{ev.uploadedAt}</p>
                       </div>
@@ -2118,6 +2105,24 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
                       </td>
                       <td className="px-6 py-4 text-right font-medium text-slate-300">{formatCLP(0)}</td>
                       <td className="px-6 py-4 text-right font-black text-rose-600">{formatCLP(pyramidRentCommission)}</td>
+                    </tr>
+                    <tr className="hover:bg-slate-50/80">
+                      <td className="px-6 py-4">
+                        <p className="font-bold text-slate-800">intereses ganados en el banco</p>
+                        <p className="text-[10px] text-slate-400 font-medium">Se suma al ingreso del mes y a la utilidad acumulada.</p>
+                      </td>
+                      <td className="px-6 py-4">
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          value={formatInputNumber(currentPyramidRentRecord.bankInterestIncome)}
+                          onChange={e => handlePyramidRentFieldChange('bankInterestIncome', e.target.value)}
+                          onBlur={e => updatePyramidRentField('bankInterestIncome', e.target.value)}
+                          className="w-full bg-transparent border-2 border-transparent focus:border-green-200 rounded-xl px-3 py-2 font-medium text-right outline-none text-green-700"
+                          placeholder="0"
+                        />
+                      </td>
+                      <td className="px-6 py-4 text-right font-medium text-slate-300">{formatCLP(0)}</td>
                     </tr>
                     <tr className="hover:bg-slate-50/80">
                       <td className="px-6 py-4 font-bold text-slate-800">pago dividendo</td>
@@ -2300,13 +2305,13 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
                 {!isDebtCollapsed && (
                   <>
                     <div className="space-y-3 mb-6 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
-                      {movements.filter(m => (m.type==='Compartido'||m.type==='Deuda'||m.type==='Préstamo'||m.type==='Yo debo') && !m.isPaid).map(m => (
+                      {movements.filter(m => isDebtRelevantType(m.type) && !m.isPaid).map(m => (
                         <div key={m.id} className="flex justify-between items-center text-sm">
                           <span className="text-slate-500 font-medium truncate pr-4">{m.concept} {m.type === 'Préstamo' && <span className="text-[8px] bg-amber-100 text-amber-700 px-1 rounded">100%</span>} {m.type === 'Yo debo' && <span className="text-[8px] bg-red-100 text-red-700 px-1 rounded">Mía</span>}</span>
                           <span className={`font-bold whitespace-nowrap ${m.type === 'Yo debo' ? 'text-red-600' : ''}`}>{formatCLP(m.type==='Compartido' ? m.amount/2 : (m.type === 'Yo debo' ? -m.amount : m.amount))}</span>
                         </div>
                       ))}
-                      {activeInstallments.filter(inst => (inst.type==='Compartido'||inst.type==='Préstamo'||inst.type==='Yo debo') && !inst.isPaid).map(inst => (
+                      {activeInstallments.filter(inst => isDebtRelevantType(inst.type) && !inst.isPaid).map(inst => (
                         <div key={'inst_debt_' + inst.id} className="flex justify-between items-center text-sm">
                           <span className="text-slate-500 font-medium truncate pr-4">
                             {inst.concept}
@@ -2318,7 +2323,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
                           </span>
                         </div>
                       ))}
-                      {activeFixedExpenses.filter(exp => (exp.type==='Compartido'||exp.type==='Préstamo'||exp.type==='Yo debo') && !exp.karlaIsPaid).map(exp => (
+                      {activeFixedExpenses.filter(exp => isDebtRelevantType(exp.type) && !exp.karlaIsPaid).map(exp => (
                         <div key={'fix_debt_' + exp.id} className="flex justify-between items-center text-sm">
                           <span className="text-slate-500 font-medium truncate pr-4">
                             {exp.concept}
@@ -2377,6 +2382,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
                           {isExpanded ? <ChevronUp size={16}/> : <ChevronDown size={16}/>}
                         </button>
                         <button onClick={() => {
+                          if (!confirmDeletion('esta carga de tarjeta')) return;
                           const updated = tcBatches.filter(b => b.id !== batch.id);
                           setTcBatches(updated); saveToCloud(movements, balances, updated);
                         }} className="p-1.5 text-slate-300 hover:text-red-500 transition-all"><Trash2 size={16}/></button>
@@ -2429,16 +2435,38 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
                   className="flex items-center gap-2 text-left text-slate-800 hover:text-blue-600 transition-colors"
                   title={isHistoryCollapsed ? 'Mostrar historial' : 'Ocultar historial'}
                 >
-                  {isHistoryCollapsed ? <ChevronDown size={18}/> : <ChevronUp size={18}/>}
-                  <span>Historial del Mes</span>
-                  <span className="text-[9px] font-black bg-slate-100 text-slate-400 px-2 py-1 rounded-lg">{historyItemCount}</span>
+                   {isHistoryCollapsed ? <ChevronDown size={18}/> : <ChevronUp size={18}/>}
+                   <span>Historial del Mes</span>
+                   <span className="text-[9px] font-black bg-slate-100 text-slate-400 px-2 py-1 rounded-lg">
+                     {hasHistoryFilters ? `${visibleSortedHistoryItems.length}/${historyItemCount}` : historyItemCount}
+                   </span>
                 </button>
                 <div className="flex gap-2">
                   <button onClick={() => setShowFixedModal(true)} className="flex items-center gap-1.5 px-3 py-2 bg-green-600 text-white rounded-xl text-[10px] font-black hover:bg-green-700 transition-all shadow-sm"><Plus size={14}/> FIJO</button>
                   <button onClick={() => setShowInstallmentModal(true)} className="flex items-center gap-1.5 px-3 py-2 bg-blue-600 text-white rounded-xl text-[10px] font-black hover:bg-blue-700 transition-all shadow-sm"><Plus size={14}/> CUOTA</button>
-                </div>
-              </div>
-              {!isHistoryCollapsed && <div className="overflow-x-auto">
+                 </div>
+               </div>
+               {!isHistoryCollapsed && (
+                 <HistoryFilters
+                   search={historySearch}
+                   onSearchChange={setHistorySearch}
+                   category={historyCategoryFilter}
+                   onCategoryChange={setHistoryCategoryFilter}
+                   type={historyTypeFilter}
+                   onTypeChange={setHistoryTypeFilter}
+                   categories={historyCategories}
+                   types={historyTypes}
+                   sortConfig={sortConfig}
+                   onSortChange={setSortConfig}
+                   hasFilters={hasHistoryFilters}
+                   onClear={() => {
+                     setHistorySearch('');
+                     setHistoryCategoryFilter('');
+                     setHistoryTypeFilter('');
+                   }}
+                 />
+               )}
+               {!isHistoryCollapsed && <div className="overflow-x-auto">
                 <table className="w-full min-w-[760px] text-sm">
                   <thead className="bg-white text-[10px] font-black text-slate-400 uppercase tracking-widest border-b">
                     <tr>                      
@@ -2448,9 +2476,16 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
                       <th className="px-4 lg:px-6 py-4 text-right cursor-pointer hover:text-blue-600 transition-colors" onClick={() => requestSort('Mi Parte')}>Mi Parte {getSortIcon('Mi Parte')}</th>
                       <th className="px-4 py-4 text-right sticky right-0 bg-white min-w-[120px]">Acciones</th>
                     </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-50">
-                    {visibleSortedHistoryItems.filter(item => item.source === 'Movimiento').map(p => (
+                   </thead>
+                   <tbody className="divide-y divide-slate-50">
+                     {visibleSortedHistoryItems.length === 0 && (
+                       <tr>
+                         <td colSpan="5" className="px-6 py-12 text-center text-sm font-medium text-slate-400">
+                           No hay registros que coincidan con la búsqueda o los filtros.
+                         </td>
+                       </tr>
+                     )}
+                     {visibleSortedHistoryItems.filter(item => item.source === 'Movimiento').map(p => (
                       <tr key={p.id} className={`group ${p.isPaid ? 'opacity-30' : 'hover:bg-slate-50'}`}>
                         <td className="px-4 lg:px-6 py-4">
                           {editingId === p.id ? (
@@ -2499,7 +2534,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
                             ) : (
                               <>
                                 <button onClick={() => startEditMovement(p)} className="p-2 text-slate-400 hover:text-blue-600"><Edit2 size={18}/></button>
-                                <button onClick={() => { const u = movements.filter(x => x.id !== p.id); setMovements(u); saveToCloud(u, balances); }} className="p-2 text-slate-400 hover:text-red-500"><Trash2 size={18}/></button>
+                                <button onClick={() => deleteMovement(p.id)} className="p-2 text-slate-400 hover:text-red-500"><Trash2 size={18}/></button>
                               </>
                             )}
                           </div>
@@ -2619,7 +2654,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
               <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-3">
                 {evidence.map(ev => (
                   <div key={ev.id} className="relative group">
-                    <img src={ev.imageBase64} alt="evidencia" onClick={() => setEvidenceViewer(ev)} className="w-full aspect-square object-cover rounded-2xl cursor-pointer hover:opacity-90 transition-opacity border border-slate-100" />
+                    <img src={getEvidenceImageUrl(ev)} alt="evidencia" onClick={() => setEvidenceViewer(ev)} className="w-full aspect-square object-cover rounded-2xl cursor-pointer hover:opacity-90 transition-opacity border border-slate-100" />
                     <button onClick={() => deleteEvidence(ev.id)} className="absolute top-1 right-1 p-1 bg-red-500 text-white rounded-lg opacity-0 group-hover:opacity-100 transition-opacity"><X size={10}/></button>
                     <p className="text-[8px] text-slate-400 text-center mt-1 truncate">{ev.uploadedAt}</p>
                   </div>
@@ -3043,7 +3078,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
         <div className="fixed inset-0 bg-black/90 z-50 flex items-center justify-center p-4" onClick={() => setEvidenceViewer(null)}>
           <div className="relative max-w-[95vw] max-h-[95vh] flex flex-col items-center" onClick={e => e.stopPropagation()}>
             <button onClick={() => setEvidenceViewer(null)} className="absolute -top-10 right-0 text-white/70 hover:text-white"><X size={24}/></button>
-            <img src={evidenceViewer.imageBase64} alt="evidencia" className="max-w-full max-h-[88vh] object-contain rounded-2xl" />
+            <img src={getEvidenceImageUrl(evidenceViewer)} alt="evidencia" className="max-w-full max-h-[88vh] object-contain rounded-2xl" />
             <p className="text-white/50 text-xs text-center mt-3">{evidenceViewer.uploadedAt}</p>
           </div>
         </div>
@@ -3053,7 +3088,7 @@ Responde SOLO con un JSON con esta estructura exacta (sin texto extra):
         <div className="fixed inset-0 bg-black/90 z-50 flex items-center justify-center p-4" onClick={() => setPyramidRentEvidenceViewer(null)}>
           <div className="relative max-w-[95vw] max-h-[95vh] flex flex-col items-center" onClick={e => e.stopPropagation()}>
             <button onClick={() => setPyramidRentEvidenceViewer(null)} className="absolute -top-10 right-0 text-white/70 hover:text-white"><X size={24}/></button>
-            <img src={pyramidRentEvidenceViewer.imageBase64} alt="evidencia arriendo" className="max-w-full max-h-[88vh] object-contain rounded-2xl" />
+            <img src={getEvidenceImageUrl(pyramidRentEvidenceViewer)} alt="evidencia arriendo" className="max-w-full max-h-[88vh] object-contain rounded-2xl" />
             <p className="text-white/50 text-xs text-center mt-3">{pyramidRentEvidenceViewer.uploadedAt}</p>
           </div>
         </div>
