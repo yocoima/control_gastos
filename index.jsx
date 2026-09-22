@@ -9,7 +9,12 @@ import {
 import HistoryFilters from './components/HistoryFilters.jsx';
 import { auth, db } from './services/firebaseClient.js';
 import { requestFinancialAdvice, scanReceiptImage } from './services/aiService.js';
-import { deleteEvidenceImage, getEvidenceImageUrl, uploadEvidenceImage } from './services/storageService.js';
+import {
+  deleteEvidenceDocument,
+  getEvidenceImageUrl,
+  saveEvidenceDocument,
+  subscribeEvidenceDocuments
+} from './services/evidenceService.js';
 import { createCsv, parseCsv } from './utils/csv.js';
 import {
   adjustCreditCardDebt,
@@ -97,7 +102,12 @@ export default function App() {
   const [projectionError, setProjectionError] = useState('');
   const [editingProjectionItemId, setEditingProjectionItemId] = useState(null);
   const [editingProjectionItemData, setEditingProjectionItemData] = useState({ type: '', amount: '' });
-  const [evidence, setEvidence] = useState([]);
+  const [legacyEvidence, setLegacyEvidence] = useState([]);
+  const [evidenceDocuments, setEvidenceDocuments] = useState([]);
+  const evidence = [
+    ...legacyEvidence,
+    ...evidenceDocuments.filter(item => item.scope === 'pagos')
+  ];
   const [pyramidRent, setPyramidRent] = useState(() => createDefaultPyramidRent());
   const [pyramidRentHistory, setPyramidRentHistory] = useState({});
   const [showEvidence, setShowEvidence] = useState(false);
@@ -449,12 +459,8 @@ export default function App() {
   const addEvidence = async (file) => {
     if (!file) return;
     try {
-      const uploaded = await uploadEvidenceImage(file, { uid: user.uid, monthKey, scope: 'pagos' });
-      const newItem = { id: createGeneratedId(), ...uploaded, uploadedAt: new Date().toLocaleString('es-CL') };
-      const updated = [...evidence, newItem];
-      setEvidence(updated);
-      await saveToCloud(movements, balances, tcBatches, updated);
-      showAppNotification('Evidencia guardada en Firebase Storage.');
+      await saveEvidenceDocument({ uid: user.uid, monthKey, scope: 'pagos', file });
+      showAppNotification('Evidencia comprimida y guardada.');
     } catch (error) {
       alert(`No se pudo subir la evidencia: ${error.message}`);
     } finally {
@@ -465,9 +471,12 @@ export default function App() {
   const deleteEvidence = async (id) => {
     if (!window.confirm('¿Eliminar esta evidencia de pago?')) return;
     const item = evidence.find(entry => entry.id === id);
-    await deleteEvidenceImage(item?.storagePath);
-    const updated = evidence.filter(e => e.id !== id);
-    setEvidence(updated);
+    if (item?.source === 'firestore') {
+      await deleteEvidenceDocument({ uid: user.uid, monthKey, id });
+      return;
+    }
+    const updated = legacyEvidence.filter(entry => entry.id !== id);
+    setLegacyEvidence(updated);
     await saveToCloud(movements, balances, tcBatches, updated);
   };
 
@@ -488,16 +497,8 @@ export default function App() {
   const addPyramidRentEvidence = async (file) => {
     if (!file) return;
     try {
-      const uploaded = await uploadEvidenceImage(file, { uid: user.uid, monthKey, scope: 'arriendo' });
-      const currentRecord = pyramidRentRef.current;
-      const nextRecord = {
-        ...currentRecord,
-        evidence: [...(currentRecord.evidence || []), { id: createGeneratedId(), ...uploaded, uploadedAt: new Date().toLocaleString('es-CL') }]
-      };
-      pyramidRentRef.current = nextRecord;
-      setPyramidRent(nextRecord);
-      await savePyramidRentRecord(nextRecord);
-      showAppNotification('Evidencia de arriendo guardada en Firebase Storage.');
+      await saveEvidenceDocument({ uid: user.uid, monthKey, scope: 'arriendo', file });
+      showAppNotification('Evidencia de arriendo comprimida y guardada.');
     } catch (error) {
       alert(`No se pudo subir la evidencia: ${error.message}`);
     } finally {
@@ -508,8 +509,14 @@ export default function App() {
   const deletePyramidRentEvidence = async (id) => {
     if (!window.confirm('¿Eliminar esta evidencia de arriendo?')) return;
     const currentRecord = pyramidRentRef.current;
-    const item = (currentRecord.evidence || []).find(entry => entry.id === id);
-    await deleteEvidenceImage(item?.storagePath);
+    const item = [
+      ...(currentRecord.evidence || []),
+      ...evidenceDocuments.filter(entry => entry.scope === 'arriendo')
+    ].find(entry => entry.id === id);
+    if (item?.source === 'firestore') {
+      await deleteEvidenceDocument({ uid: user.uid, monthKey, id });
+      return;
+    }
     const nextRecord = {
       ...currentRecord,
       evidence: (currentRecord.evidence || []).filter(item => item.id !== id)
@@ -631,7 +638,8 @@ export default function App() {
     setMovements([]);
     setBalances({ itau: 0, scotia: 0, edenred: 0, tc_deuda: 0 });
     setTcBatches([]);
-    setEvidence([]);
+    setLegacyEvidence([]);
+    setEvidenceDocuments([]);
     setProjectionItems([]);
     setProjectionResult(null);
     setAiAdvice(null);
@@ -645,7 +653,7 @@ export default function App() {
         setMovements(data.movements || []);
         setBalances(data.balances || { itau: 0, scotia: 0, edenred: 0, tc_deuda: 0 });
         setTcBatches(data.tcBatches || []);
-        setEvidence(data.evidence || []);
+        setLegacyEvidence(data.evidence || []);
         setPyramidRent(normalizePyramidRentRecord(data.pyramidRent || {}, monthKey));
 
         loadedMonthKeyRef.current = snap.ref.id;
@@ -655,7 +663,7 @@ export default function App() {
         setMovements([]);
         setBalances({ itau: 0, scotia: 0, edenred: 0, tc_deuda: 0 });
         setTcBatches([]);
-        setEvidence([]);
+        setLegacyEvidence([]);
         setPyramidRent(createDefaultPyramidRent());
         loadedMonthKeyRef.current = monthKey;
         setProjectionItems([]);
@@ -667,6 +675,17 @@ export default function App() {
       setLoading(false);
     }, (err) => setLoading(false));
     return () => unsubscribe();
+  }, [user, monthKey]);
+
+  useEffect(() => {
+    if (!user) return undefined;
+    setEvidenceDocuments([]);
+    return subscribeEvidenceDocuments({
+      uid: user.uid,
+      monthKey,
+      onChange: setEvidenceDocuments,
+      onError: error => console.error('Error al cargar evidencias:', error)
+    });
   }, [user, monthKey]);
 
   useEffect(() => {
@@ -692,7 +711,7 @@ export default function App() {
     newMovs,
     newBals,
     newBatches = tcBatches,
-    newEvidence = evidence,
+    newEvidence = legacyEvidence,
     newProjection = { items: projectionItems, result: projectionResult },
     newPyramidRent = pyramidRent
   ) => {
@@ -702,7 +721,7 @@ export default function App() {
         movements: newMovs,
         balances: newBals,
         tcBatches: newBatches,
-        evidence: newEvidence,
+        evidence: newEvidence.filter(item => item.source !== 'firestore'),
         pyramidRent: {
           ...normalizePyramidRentRecord(newPyramidRent),
           updatedAt: new Date().toISOString()
@@ -1567,6 +1586,10 @@ export default function App() {
   const totalBancos = balances.itau + balances.scotia;
   const liquidezReal = totalBancos - balances.tc_deuda;
   const currentPyramidRentRecord = normalizePyramidRentRecord(pyramidRent);
+  const pyramidRentEvidence = [
+    ...(currentPyramidRentRecord.evidence || []),
+    ...evidenceDocuments.filter(item => item.scope === 'arriendo')
+  ];
   const pyramidRentCommission = getPyramidRentCommission(currentPyramidRentRecord.rentIncome);
   const pyramidRentIncome = parseRawNumber(currentPyramidRentRecord.rentIncome)
     + parseRawNumber(currentPyramidRentRecord.bankInterestIncome)
@@ -2036,7 +2059,7 @@ export default function App() {
               <button onClick={() => setShowPyramidRentEvidence(!showPyramidRentEvidence)} className="w-full p-5 flex justify-between items-center hover:bg-slate-50 transition-all">
                 <div className="flex items-center gap-3">
                   <span className="font-black text-slate-700">Evidencia de Pago</span>
-                  {(currentPyramidRentRecord.evidence || []).length > 0 && <span className="text-[9px] font-black bg-slate-100 text-slate-500 px-2 py-1 rounded-lg">{currentPyramidRentRecord.evidence.length} imagen{currentPyramidRentRecord.evidence.length !== 1 ? 'es' : ''}</span>}
+                  {pyramidRentEvidence.length > 0 && <span className="text-[9px] font-black bg-slate-100 text-slate-500 px-2 py-1 rounded-lg">{pyramidRentEvidence.length} imagen{pyramidRentEvidence.length !== 1 ? 'es' : ''}</span>}
                 </div>
                 {showPyramidRentEvidence ? <ChevronUp size={18} className="text-slate-400"/> : <ChevronDown size={18} className="text-slate-400"/>}
               </button>
@@ -2051,9 +2074,9 @@ export default function App() {
                       Ctrl+V para pegar imagen
                     </div>
                   </div>
-                  {(currentPyramidRentRecord.evidence || []).length === 0 && <p className="text-xs text-slate-400 text-center py-6">Sin evidencias subidas este mes</p>}
+                  {pyramidRentEvidence.length === 0 && <p className="text-xs text-slate-400 text-center py-6">Sin evidencias subidas este mes</p>}
                   <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-3">
-                    {(currentPyramidRentRecord.evidence || []).map(ev => (
+                    {pyramidRentEvidence.map(ev => (
                       <div key={ev.id} className="relative group">
                         <img src={getEvidenceImageUrl(ev)} alt="evidencia arriendo" onClick={() => setPyramidRentEvidenceViewer(ev)} className="w-full aspect-square object-cover rounded-2xl cursor-pointer hover:opacity-90 transition-opacity border border-slate-100" />
                         <button onClick={() => deletePyramidRentEvidence(ev.id)} className="absolute top-1 right-1 p-1 bg-red-500 text-white rounded-lg opacity-0 group-hover:opacity-100 transition-opacity"><X size={10}/></button>
