@@ -7,6 +7,7 @@ import {
   CreditCard, Wallet, ArrowRightLeft, Copy, Check, Download, Upload, ShieldCheck, Settings, X, Calculator
 } from 'lucide-react';
 import HistoryFilters from './components/HistoryFilters.jsx';
+import MonthlyAnalysis from './components/MonthlyAnalysis.jsx';
 import { auth, db } from './services/firebaseClient.js';
 import { requestFinancialAdvice, scanReceiptImage } from './services/aiService.js';
 import {
@@ -320,7 +321,7 @@ export default function App() {
       const advice = await requestFinancialAdvice({
         monthName,
         income: tots.income,
-        individualExpenses: tots.indiv,
+        personalExpenses: tots.indiv,
         sharedExpenses: tots.shared,
         categories: dashByCat,
         types: dashByTyp
@@ -1748,6 +1749,8 @@ export default function App() {
             <p className="text-2xl font-black">{formatCLP(totals.debt)}</p>
           </div>
         </div>
+
+        <MonthlyAnalysis uid={user.uid} />
 
         <div className="bg-white rounded-[2rem] border border-slate-200 shadow-sm p-5 mb-8">
           <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">

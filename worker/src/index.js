@@ -1,3 +1,5 @@
+import { calculateFinancialMetrics, createDeterministicDiagnosis } from './financialMetrics.js';
+
 const TEXT_MODEL = 'openai/gpt-oss-120b';
 const VISION_MODEL = 'qwen/qwen3.8-27b';
 
@@ -70,14 +72,28 @@ const handleAI = async (request, env) => {
   const payload = await request.json();
 
   if (payload.action === 'financialAdvice') {
+    const metrics = calculateFinancialMetrics({
+      income: payload.income,
+      personalExpenses: payload.personalExpenses ?? payload.individualExpenses
+    });
+    const sharedExpenses = Math.max(0, Math.round(Number(payload.sharedExpenses) || 0));
     const prompt = `Eres un asesor financiero personal experto. Analiza los datos de ${String(payload.monthName || '').slice(0, 80)} y entrega consejos claros y accionables en español chileno.
-Ingresos: ${Number(payload.income) || 0}
-Gastos personales: ${Number(payload.individualExpenses) || 0}
-Gastos compartidos: ${Number(payload.sharedExpenses) || 0}
+Ingresos: ${metrics.income}
+Gasto personal efectivo: ${metrics.personalExpenses}. Este es el ÚNICO total de gastos que se compara con los ingresos y ya incluye la parte del usuario en gastos compartidos.
+Gasto compartido bruto de referencia: ${sharedExpenses}. NO lo sumes al gasto personal; se entrega solo como contexto.
+Balance ya calculado (ingresos menos gasto personal): ${metrics.balance}
+Porcentaje del ingreso destinado a gastos: ${metrics.expensePercentage}%
 Gastos por categoría: ${JSON.stringify(payload.categories || []).slice(0, 5000)}
 Gastos por tipo: ${JSON.stringify(payload.types || []).slice(0, 5000)}
+No recalcules ni sumes los totales. Si el balance es negativo, no recomiendes destinar dinero a ahorro hasta eliminar el déficit.
 Responde SOLO como JSON: {"diagnostico":"texto","ahorro_recomendado":0,"ahorro_porcentaje":0,"recomendaciones":["texto"],"alertas":[],"puntos_positivos":[]}`;
-    return callGroq(env, { model: TEXT_MODEL, messages: [{ role: 'user', content: prompt }] });
+    const advice = await callGroq(env, { model: TEXT_MODEL, messages: [{ role: 'user', content: prompt }] });
+    return {
+      ...advice,
+      diagnostico: createDeterministicDiagnosis(metrics, sharedExpenses),
+      ahorro_recomendado: metrics.savingsRecommended,
+      ahorro_porcentaje: metrics.savingsPercentage
+    };
   }
 
   if (payload.action === 'scanReceipt') {
